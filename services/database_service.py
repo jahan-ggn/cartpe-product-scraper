@@ -12,28 +12,6 @@ class StoreService:
     """Service class for store-related database operations"""
 
     @staticmethod
-    def get_stores_without_token() -> List[Dict]:
-        """
-        Fetch all stores that don't have a web token
-
-        Returns:
-            List of store dictionaries
-        """
-        query = """
-            SELECT store_id, store_name, store_slug, base_url, api_endpoint
-            FROM stores
-            WHERE web_token IS NULL OR web_token = ''
-        """
-
-        try:
-            stores = DatabaseManager.execute_query(query, fetch=True)
-            logger.info(f"Found {len(stores)} stores without tokens")
-            return stores
-        except Exception as e:
-            logger.error(f"Error fetching stores: {e}")
-            return []
-
-    @staticmethod
     def get_all_stores() -> List[Dict]:
         """
         Fetch all stores from database
@@ -178,9 +156,9 @@ class ProductService:
         query = """
             INSERT INTO products 
             (store_id, category_id, product_id, product_name, product_url, 
-             image_url, current_price, original_price, size, stock_status, 
-             is_active, last_synced_at, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            image_url, current_price, original_price, has_variants, variants,
+            stock_status, is_active, last_synced_at, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 category_id = VALUES(category_id),
                 product_name = VALUES(product_name),
@@ -188,9 +166,10 @@ class ProductService:
                 image_url = VALUES(image_url),
                 current_price = VALUES(current_price),
                 original_price = VALUES(original_price),
-                size = VALUES(size),
+                has_variants = VALUES(has_variants),
+                variants = VALUES(variants),
                 stock_status = VALUES(stock_status),
-                is_active = TRUE,
+                is_active = VALUES(is_active),
                 last_synced_at = VALUES(last_synced_at),
                 updated_at = VALUES(updated_at)
         """
@@ -207,9 +186,10 @@ class ProductService:
                     prod["image_url"],
                     prod["current_price"],
                     prod["original_price"],
-                    prod["size"],
+                    prod["has_variants"],
+                    prod["variants"],
                     prod["stock_status"],
-                    True,  # is_active
+                    True,  # is_active - products found in scrape are active
                     now,  # last_synced_at
                     now,  # created_at
                     now,  # updated_at
@@ -243,4 +223,34 @@ class ProductService:
             return result[0]["count"] if result else 0
         except Exception as e:
             logger.error(f"Error getting product count: {e}")
+            return 0
+
+    @staticmethod
+    def mark_category_products_inactive(store_id: int, category_id: int) -> int:
+        """
+        Mark all products in a category as inactive before scraping
+
+        Args:
+            store_id: Store ID
+            category_id: Category ID
+
+        Returns:
+            Number of rows affected
+        """
+        query = """
+            UPDATE products 
+            SET is_active = FALSE 
+            WHERE store_id = %s AND category_id = %s
+        """
+
+        try:
+            rows_affected = DatabaseManager.execute_query(
+                query, (store_id, category_id)
+            )
+            logger.info(
+                f"Marked {rows_affected} products as inactive for category {category_id}"
+            )
+            return rows_affected
+        except Exception as e:
+            logger.error(f"Error marking products inactive: {e}")
             return 0

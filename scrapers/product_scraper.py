@@ -216,9 +216,21 @@ class ProductScraper:
                     if price_match:
                         original_price = float(price_match.group().replace(",", ""))
 
-            # Extract size (if available)
-            size_label = element.select_one("label.badge.badge-primary")
-            size = size_label.get_text(strip=True) if size_label else ""
+            # Extract variants (size labels)
+            variant_labels = element.select("label.badge.badge-primary")
+            has_variants = False
+            variants = None
+
+            if variant_labels:
+                # Filter out empty labels and get text
+                variant_list = [
+                    label.get_text(strip=True)
+                    for label in variant_labels
+                    if label.get_text(strip=True)
+                ]
+                if variant_list:  # Only set True if we have actual variant text
+                    has_variants = True
+                    variants = ", ".join(variant_list)
 
             return {
                 "store_id": store_id,
@@ -229,7 +241,8 @@ class ProductScraper:
                 "image_url": image_url,
                 "current_price": current_price,
                 "original_price": original_price,
-                "size": size,
+                "has_variants": has_variants,
+                "variants": variants,
                 "stock_status": stock_status,
             }
 

@@ -1,10 +1,11 @@
-"""Main entry point for product scraping"""
+"""Main entry point for the complete scraping pipeline"""
 
 import logging
 from utils.logger import setup_logger
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from scrapers.product_scraper import ProductScraper, TokenExpiredException
 from scrapers.token_scraper import TokenScraper
+from scrapers.category_scraper import CategoryScraper
+from scrapers.product_scraper import ProductScraper, TokenExpiredException
 from services.database_service import StoreService, CategoryService, ProductService
 from config.settings import settings
 
@@ -12,16 +13,156 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# STEP 1: TOKEN EXTRACTION
+# ============================================================================
+
+
+def extract_and_update_token(store_data: dict, scraper: TokenScraper) -> tuple:
+    """Extract token for a single store and update database"""
+    store_id = store_data["store_id"]
+    store_name = store_data["store_name"]
+
+    try:
+        token = scraper.extract_token(store_data)
+
+        if token:
+            success = StoreService.update_store_token(store_id, token)
+            return (store_id, store_name, success)
+        else:
+            logger.warning(f"Failed to extract token for {store_name}")
+            return (store_id, store_name, False)
+
+    except Exception as e:
+        logger.error(f"Error processing store {store_name}: {e}")
+        return (store_id, store_name, False)
+
+
+def run_token_extraction():
+    """Extract tokens for all stores without tokens"""
+    logger.info("=" * 80)
+    logger.info("STEP 1: Token Extraction")
+    logger.info("=" * 80)
+
+    stores = StoreService.get_all_stores()
+
+    if not stores:
+        logger.info("All stores have tokens. Skipping token extraction.")
+        return True
+
+    logger.info(f"Extracting tokens for {len(stores)} stores")
+
+    scraper = TokenScraper()
+    successful = 0
+    failed = 0
+
+    try:
+        with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
+            future_to_store = {
+                executor.submit(extract_and_update_token, store, scraper): store
+                for store in stores
+            }
+
+            for future in as_completed(future_to_store):
+                store_id, store_name, success = future.result()
+
+                if success:
+                    successful += 1
+                    logger.info(f"✓ Token extracted: {store_name}")
+                else:
+                    failed += 1
+                    logger.error(f"✗ Token failed: {store_name}")
+
+    finally:
+        scraper.close()
+
+    logger.info(
+        f"Token extraction complete: {successful} successful, {failed} failed\n"
+    )
+    return failed == 0
+
+
+# ============================================================================
+# STEP 2: CATEGORY SCRAPING
+# ============================================================================
+
+
+def scrape_and_save_categories(store_data: dict, scraper: CategoryScraper) -> tuple:
+    """Scrape categories for a single store and save to database"""
+    store_id = store_data["store_id"]
+    store_name = store_data["store_name"]
+
+    try:
+        categories = scraper.extract_categories(store_data)
+
+        if categories:
+            inserted_count = CategoryService.bulk_insert_categories(categories)
+            logger.info(f"Saved {inserted_count} categories for {store_name}")
+            return (store_id, store_name, len(categories), True)
+        else:
+            logger.warning(f"No categories found for {store_name}")
+            return (store_id, store_name, 0, False)
+
+    except Exception as e:
+        logger.error(f"Error processing store {store_name}: {e}")
+        return (store_id, store_name, 0, False)
+
+
+def run_category_scraping():
+    """Scrape categories for all stores"""
+    logger.info("=" * 80)
+    logger.info("STEP 2: Category Scraping")
+    logger.info("=" * 80)
+
+    stores = StoreService.get_all_stores()
+
+    if not stores:
+        logger.info("No stores found in database.")
+        return False
+
+    logger.info(f"Scraping categories for {len(stores)} stores")
+
+    scraper = CategoryScraper()
+    successful = 0
+    failed = 0
+    total_categories = 0
+
+    try:
+        with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
+            future_to_store = {
+                executor.submit(scrape_and_save_categories, store, scraper): store
+                for store in stores
+            }
+
+            for future in as_completed(future_to_store):
+                store_id, store_name, category_count, success = future.result()
+
+                if success:
+                    successful += 1
+                    total_categories += category_count
+                    logger.info(
+                        f"✓ Categories scraped: {store_name} ({category_count})"
+                    )
+                else:
+                    failed += 1
+                    logger.error(f"✗ Categories failed: {store_name}")
+
+    finally:
+        scraper.close()
+
+    logger.info(
+        f"Category scraping complete: {total_categories} categories from {successful} stores\n"
+    )
+    return failed == 0
+
+
+# ============================================================================
+# STEP 3: PRODUCT SCRAPING
+# ============================================================================
+
+
 def scrape_store_products(store_data: dict) -> tuple:
-    """
-    Scrape all products for a single store
-
-    Args:
-        store_data: Store information dictionary
-
-    Returns:
-        Tuple of (store_id, store_name, product_count, success_status)
-    """
+    """Scrape all products for a single store"""
     store_id = store_data["store_id"]
     store_name = store_data["store_name"]
 
@@ -29,7 +170,6 @@ def scrape_store_products(store_data: dict) -> tuple:
     total_products = 0
 
     try:
-        # Get all categories for this store
         categories = CategoryService.get_categories_by_store(store_id)
 
         if not categories:
@@ -38,14 +178,17 @@ def scrape_store_products(store_data: dict) -> tuple:
 
         logger.info(f"Processing {len(categories)} categories for {store_name}")
 
-        # Process each category
         for category in categories:
             try:
+                # Mark all products in this category as inactive before scraping
+                ProductService.mark_category_products_inactive(
+                    store_id, category["category_id"]
+                )
+
                 # Extract products
                 products = scraper.extract_products(store_data, category)
 
                 if products:
-                    # Batch insert/update in database
                     ProductService.bulk_upsert_products(products)
                     total_products += len(products)
                     logger.info(
@@ -55,7 +198,6 @@ def scrape_store_products(store_data: dict) -> tuple:
             except TokenExpiredException:
                 logger.warning(f"Token expired for {store_name}. Re-fetching token...")
 
-                # Re-fetch token
                 token_scraper = TokenScraper()
                 new_token = token_scraper.extract_token(store_data)
                 token_scraper.close()
@@ -65,7 +207,6 @@ def scrape_store_products(store_data: dict) -> tuple:
                     store_data["web_token"] = new_token
                     logger.info(f"Token refreshed for {store_name}. Retrying...")
 
-                    # Retry this category
                     products = scraper.extract_products(store_data, category)
                     if products:
                         ProductService.bulk_upsert_products(products)
@@ -90,60 +231,79 @@ def scrape_store_products(store_data: dict) -> tuple:
 
 
 def run_product_scraping():
-    """Main function to scrape products for all stores"""
+    """Scrape products for all stores"""
     logger.info("=" * 80)
-    logger.info("Starting Product Scraping Process")
+    logger.info("STEP 3: Product Scraping")
     logger.info("=" * 80)
 
-    # Get all stores
     stores = StoreService.get_all_stores()
 
     if not stores:
-        logger.info("No stores found in database. Exiting.")
-        return
+        logger.info("No stores found in database.")
+        return False
 
-    logger.info(f"Processing {len(stores)} stores with {settings.MAX_WORKERS} workers")
+    logger.info(f"Scraping products for {len(stores)} stores")
 
-    # Statistics
     successful = 0
     failed = 0
     total_products = 0
 
-    # Use ThreadPoolExecutor for parallel processing
     with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
-        # Submit all tasks
         future_to_store = {
             executor.submit(scrape_store_products, store): store for store in stores
         }
 
-        # Process completed tasks
         for future in as_completed(future_to_store):
             store_id, store_name, product_count, success = future.result()
 
             if success:
                 successful += 1
                 total_products += product_count
-                logger.info(
-                    f"✓ Successfully processed: {store_name} ({product_count} products)"
-                )
+                logger.info(f"✓ Products scraped: {store_name} ({product_count})")
             else:
                 failed += 1
-                logger.error(f"✗ Failed to process: {store_name}")
+                logger.error(f"✗ Products failed: {store_name}")
 
-    # Summary
-    logger.info("=" * 80)
-    logger.info("Product Scraping Complete")
-    logger.info(f"Total Stores: {len(stores)}")
-    logger.info(f"Successful: {successful}")
-    logger.info(f"Failed: {failed}")
-    logger.info(f"Total Products Scraped: {total_products}")
-    logger.info("=" * 80)
+    logger.info(
+        f"Product scraping complete: {total_products} products from {successful} stores\n"
+    )
+    return failed == 0
 
 
-if __name__ == "__main__":
+# ============================================================================
+# MAIN ORCHESTRATOR
+# ============================================================================
+
+
+def main():
+    """Main orchestrator for the complete scraping pipeline"""
+    logger.info("*" * 80)
+    logger.info("CARTPE PRODUCT SCRAPER - COMPLETE PIPELINE")
+    logger.info("*" * 80)
+    logger.info("")
+
     try:
-        run_product_scraping()
+        # Step 1: Extract tokens
+        if not run_token_extraction():
+            logger.warning("Token extraction had failures, but continuing...")
+
+        # Step 2: Scrape categories
+        if not run_category_scraping():
+            logger.warning("Category scraping had failures, but continuing...")
+
+        # Step 3: Scrape products
+        if not run_product_scraping():
+            logger.warning("Product scraping had failures")
+
+        logger.info("*" * 80)
+        logger.info("PIPELINE COMPLETE")
+        logger.info("*" * 80)
+
     except KeyboardInterrupt:
         logger.info("Process interrupted by user")
     except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
+        logger.error(f"Fatal error in pipeline: {e}", exc_info=True)
+
+
+if __name__ == "__main__":
+    main()
