@@ -6,7 +6,9 @@ import logging
 import time
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
+from rapidfuzz import fuzz, process
 from config.settings import settings
+from services.database_service import BrandService
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,69 @@ class ProductScraper:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": settings.USER_AGENT})
+        # Load brands once during initialization
+        self.known_brands = BrandService.get_all_brands()
+        logger.info(f"Loaded {len(self.known_brands)} brands for matching")
+
+    def _extract_brand_from_name(self, product_name: str) -> Optional[str]:
+        """
+        Extract and normalize brand name from product name using multi-strategy approach
+
+        Args:
+            product_name: Full product name
+
+        Returns:
+            Matched brand name or None
+        """
+        if not product_name or not self.known_brands:
+            return None
+
+        # Step 1: Clean the product name
+        # Remove underscores completely (they're noise)
+        cleaned = product_name.replace("_", "")
+        # Remove special characters except spaces
+        cleaned = re.sub(r"[^\w\s]", " ", cleaned)
+        # Normalize whitespace
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned_lower = cleaned.lower()
+
+        # Step 2: Create normalized brand lookup
+        brand_map = {}
+        for brand in self.known_brands:
+            brand_clean = re.sub(r"[^\w\s]", " ", brand)
+            brand_clean = re.sub(r"\s+", " ", brand_clean).strip().lower()
+            brand_map[brand_clean] = brand
+
+        # Strategy 1: Exact word boundary match
+        for brand_clean, brand_original in brand_map.items():
+            # Check if brand appears as complete word(s) at start or anywhere
+            pattern = r"\b" + re.escape(brand_clean) + r"\b"
+            if re.search(pattern, cleaned_lower):
+                return brand_original
+
+        # Strategy 2: Fuzzy match on first few words (higher threshold)
+        words = cleaned_lower.split()
+        if words:
+            for num_words in [3, 2, 1]:
+                if len(words) >= num_words:
+                    candidate = " ".join(words[:num_words])
+
+                    best_match = process.extractOne(
+                        candidate,
+                        list(brand_map.keys()),
+                        scorer=fuzz.ratio,
+                        score_cutoff=88,  # High threshold for accuracy
+                    )
+
+                    if best_match:
+                        return brand_map[best_match[0]]
+
+        # Strategy 3: Substring match for longer brands (min 4 chars)
+        for brand_clean, brand_original in brand_map.items():
+            if len(brand_clean) >= 4 and brand_clean in cleaned_lower:
+                return brand_original
+
+        return None
 
     def extract_products(
         self, store_data: Dict, category_data: Dict, orderby: str = "new"
@@ -179,6 +244,12 @@ class ProductScraper:
 
             product_name = h6_tag.get_text(strip=True)
 
+            # Extract brand from product name
+            brand_name = self._extract_brand_from_name(product_name)
+            brand_id = None
+            if brand_name:
+                brand_id = BrandService.get_brand_id_by_name(brand_name)
+
             # Extract product ID from button
             button = element.select_one("button[data-product_id]")
             if not button:
@@ -197,12 +268,19 @@ class ProductScraper:
             image_url = img.get("src", "").strip() if img else ""
 
             # Extract prices
-            price_elements = element.select("h6")
+            price_elements = element.select("h6")[1:]
             current_price = None
             original_price = None
 
             for price_elem in price_elements:
-                price_text = price_elem.get_text(strip=True)
+                # Get text excluding child elements (like <i> icon)
+                price_text = "".join(
+                    price_elem.find_all(text=True, recursive=False)
+                ).strip()
+
+                # Skip if no text found
+                if not price_text:
+                    continue
 
                 # Current price (without l-through class)
                 if "l-through" not in price_elem.get("class", []):
@@ -222,13 +300,12 @@ class ProductScraper:
             variants = None
 
             if variant_labels:
-                # Filter out empty labels and get text
                 variant_list = [
                     label.get_text(strip=True)
                     for label in variant_labels
                     if label.get_text(strip=True)
                 ]
-                if variant_list:  # Only set True if we have actual variant text
+                if variant_list:
                     has_variants = True
                     variants = ", ".join(variant_list)
 
@@ -244,6 +321,7 @@ class ProductScraper:
                 "has_variants": has_variants,
                 "variants": variants,
                 "stock_status": stock_status,
+                "brand_id": brand_id,
             }
 
         except Exception as e:

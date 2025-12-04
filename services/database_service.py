@@ -157,8 +157,8 @@ class ProductService:
             INSERT INTO products 
             (store_id, category_id, product_id, product_name, product_url, 
             image_url, current_price, original_price, has_variants, variants,
-            stock_status, is_active, last_synced_at, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            stock_status, is_active, brand_id, last_synced_at, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 category_id = VALUES(category_id),
                 product_name = VALUES(product_name),
@@ -170,6 +170,7 @@ class ProductService:
                 variants = VALUES(variants),
                 stock_status = VALUES(stock_status),
                 is_active = VALUES(is_active),
+                brand_id = VALUES(brand_id),
                 last_synced_at = VALUES(last_synced_at),
                 updated_at = VALUES(updated_at)
         """
@@ -190,6 +191,7 @@ class ProductService:
                     prod["variants"],
                     prod["stock_status"],
                     True,  # is_active - products found in scrape are active
+                    prod["brand_id"],  # brand_id
                     now,  # last_synced_at
                     now,  # created_at
                     now,  # updated_at
@@ -254,3 +256,48 @@ class ProductService:
         except Exception as e:
             logger.error(f"Error marking products inactive: {e}")
             return 0
+
+
+class BrandService:
+    """Service class for brand-related database operations"""
+
+    @staticmethod
+    def get_all_brands() -> List[str]:
+        """
+        Get all brand names from database
+
+        Returns:
+            List of brand names
+        """
+        query = "SELECT brand_name FROM brands"
+
+        try:
+            results = DatabaseManager.execute_query(query, fetch=True)
+            brands = [row["brand_name"] for row in results]
+            logger.info(f"Loaded {len(brands)} brands from database")
+            return brands
+        except Exception as e:
+            logger.error(f"Error fetching brands: {e}")
+            return []
+
+    @staticmethod
+    def get_brand_id_by_name(brand_name: str) -> Optional[int]:
+        """
+        Get brand ID by exact brand name match
+
+        Args:
+            brand_name: Brand name to search
+
+        Returns:
+            Brand ID or None if not found
+        """
+        query = "SELECT brand_id FROM brands WHERE brand_name = %s"
+
+        try:
+            result = DatabaseManager.execute_query(query, (brand_name,), fetch=True)
+            if result:
+                return result[0]["brand_id"]
+            return None
+        except Exception as e:
+            logger.error(f"Error getting brand ID: {e}")
+            return None
