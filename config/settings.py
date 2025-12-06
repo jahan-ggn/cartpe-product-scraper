@@ -15,6 +15,7 @@ class Settings:
     DB_USER = os.getenv("DB_USER", "root")
     DB_PASSWORD = os.getenv("DB_PASSWORD", "")
     DB_NAME = os.getenv("DB_NAME", "cartpe_scraper")
+    ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 
     # Connection Pool Settings
     POOL_NAME = "cartpe_pool"
