@@ -214,3 +214,65 @@ class SubscriptionService:
         except Exception as e:
             logger.error(f"Error storing WooCommerce credentials: {str(e)}")
             raise
+
+    @staticmethod
+    def get_subscription_status(token: str, buyer_domain: str) -> Dict:
+        """
+        Get subscription status and details
+
+        Args:
+            token: Subscription token
+            buyer_domain: Buyer's domain
+
+        Returns:
+            Dictionary with subscription details
+        """
+        try:
+            with DatabaseManager.get_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+
+                # Get subscription
+                cursor.execute(
+                    """SELECT id, token, plan_name, plan_duration, status, expires_at 
+                    FROM api_subscriptions 
+                    WHERE buyer_domain = %s AND status = 'active' 
+                    ORDER BY created_at DESC LIMIT 1""",
+                    (buyer_domain,),
+                )
+                subscription = cursor.fetchone()
+
+                if not subscription:
+                    raise ValueError(
+                        f"No active subscription found for domain: {buyer_domain}"
+                    )
+
+                # Verify token
+                if subscription["token"] != token:
+                    raise ValueError("Invalid token for this domain")
+
+                subscription_id = subscription["id"]
+
+                # Get selected stores
+                cursor.execute(
+                    """SELECT sp.store_id, s.store_name 
+                    FROM subscription_permissions sp
+                    JOIN stores s ON sp.store_id = s.store_id
+                    WHERE sp.subscription_id = %s""",
+                    (subscription_id,),
+                )
+                stores = cursor.fetchall()
+
+                return {
+                    "plan_name": subscription["plan_name"],
+                    "plan_duration": subscription["plan_duration"],
+                    "expires_at": subscription["expires_at"].isoformat(),
+                    "status": subscription["status"],
+                    "selected_stores": [
+                        {"store_id": s["store_id"], "store_name": s["store_name"]}
+                        for s in stores
+                    ],
+                }
+
+        except Exception as e:
+            logger.error(f"Error getting subscription status: {str(e)}")
+            raise

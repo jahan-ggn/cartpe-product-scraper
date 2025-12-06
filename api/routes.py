@@ -33,6 +33,11 @@ class WooCommerceCredentialsRequest(BaseModel):
     consumer_secret: str
 
 
+class SubscriptionStatusRequest(BaseModel):
+    token: str
+    buyer_domain: str
+
+
 @router.get("/stores", response_model=List[Dict])
 def get_stores_with_categories():
     """
@@ -156,4 +161,29 @@ async def store_woocommerce_credentials(request: WooCommerceCredentialsRequest):
 
     except Exception as e:
         logger.error(f"Error storing WooCommerce credentials: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/subscriptions/status")
+async def get_subscription_status(request: SubscriptionStatusRequest):
+    """
+    Get subscription status and details
+
+    Request body:
+    {
+        "token": "abc-123-xyz",
+        "buyer_domain": "buyersite.com"
+    }
+    """
+    try:
+        result = SubscriptionService.get_subscription_status(
+            token=request.token, buyer_domain=request.buyer_domain
+        )
+
+        return {"success": True, "data": result}
+
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in get_subscription_status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
