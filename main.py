@@ -8,6 +8,9 @@ from scrapers.category_scraper import CategoryScraper
 from scrapers.product_scraper import ProductScraper, TokenExpiredException
 from services.database_service import StoreService, CategoryService, ProductService
 from config.settings import settings
+from services.push_orchestrator import PushOrchestrator
+from services.csv_service import CSVService
+
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -283,6 +286,8 @@ def main():
     logger.info("")
 
     try:
+        CSVService.cleanup_old_csvs()
+
         # Step 1: Extract tokens
         if not run_token_extraction():
             logger.warning("Token extraction had failures, but continuing...")
@@ -294,6 +299,18 @@ def main():
         # Step 3: Scrape products
         if not run_product_scraping():
             logger.warning("Product scraping had failures")
+
+        # Step 4: Push data to subscriptions
+        logger.info("=" * 80)
+        logger.info("STEP 4: Pushing Data to Subscriptions")
+        logger.info("=" * 80)
+
+        push_results = PushOrchestrator.push_to_all_subscriptions()
+
+        logger.info(
+            f"Push complete: {push_results['success']} success, "
+            f"{push_results['failed']} failed, {push_results['no_data']} no data"
+        )
 
         logger.info("*" * 80)
         logger.info("PIPELINE COMPLETE")
