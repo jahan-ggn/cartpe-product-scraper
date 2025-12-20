@@ -106,6 +106,10 @@ class SubscriptionService:
             Dictionary with success status
         """
         try:
+            # Validate store_ids is not empty
+            if not store_ids:
+                raise ValueError("store_ids cannot be empty")
+
             with DatabaseManager.get_connection() as conn:
                 cursor = conn.cursor(dictionary=True)
 
@@ -139,7 +143,18 @@ class SubscriptionService:
                         f"You requested {len(store_ids)} stores."
                     )
 
-                # Delete existing permissions
+                # Validate that all store_ids exist BEFORE deleting
+                cursor.execute(
+                    f"SELECT store_id FROM stores WHERE store_id IN ({','.join(['%s'] * len(store_ids))})",
+                    store_ids,
+                )
+                valid_stores = {row["store_id"] for row in cursor.fetchall()}
+
+                invalid_stores = set(store_ids) - valid_stores
+                if invalid_stores:
+                    raise ValueError(f"Invalid store IDs: {invalid_stores}")
+
+                # Now safe to delete existing permissions
                 cursor.execute(
                     "DELETE FROM subscription_permissions WHERE subscription_id = %s",
                     (subscription_id,),
@@ -187,8 +202,23 @@ class SubscriptionService:
             Dictionary with success status
         """
         try:
+            # Validate WooCommerce credentials format
+            if not consumer_key or not consumer_key.startswith("ck_"):
+                raise ValueError("Invalid consumer_key format. Must start with 'ck_'")
+
+            if not consumer_secret or not consumer_secret.startswith("cs_"):
+                raise ValueError(
+                    "Invalid consumer_secret format. Must start with 'cs_'"
+                )
             with DatabaseManager.get_connection() as conn:
                 cursor = conn.cursor()
+
+                # Validate subscription exists
+                cursor.execute(
+                    "SELECT id FROM api_subscriptions WHERE id = %s", (subscription_id,)
+                )
+                if not cursor.fetchone():
+                    raise ValueError(f"Subscription {subscription_id} does not exist")
 
                 query = """
                     INSERT INTO woocommerce_credentials 
