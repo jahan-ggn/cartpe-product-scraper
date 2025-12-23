@@ -155,10 +155,10 @@ class ProductService:
 
         query = """
             INSERT INTO products 
-            (store_id, category_id, product_id, product_name, product_url, 
+            (store_id, store_name, category_id, product_id, product_name, product_url, 
             image_url, current_price, original_price, has_variants, variants,
             stock_status, is_active, brand_id, last_synced_at, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
             category_id = VALUES(category_id),
             product_name = VALUES(product_name),
@@ -187,6 +187,7 @@ class ProductService:
             data = [
                 (
                     prod["store_id"],
+                    prod["store_name"],
                     prod["category_id"],
                     prod["product_id"],
                     prod["product_name"],
