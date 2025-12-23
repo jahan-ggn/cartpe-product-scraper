@@ -74,7 +74,7 @@ class CSVService:
                 # Added filter: image_url IS NOT NULL AND image_url != ''
                 if is_full_load:
                     query = """
-                        SELECT id, store_id, category_id, product_id, product_name, 
+                        SELECT id, store_id, store_name, category_id, product_id, product_name, 
                             product_url, image_url, current_price, original_price, 
                             stock_status, is_active, last_synced_at, created_at, 
                             updated_at, has_variants, variants, brand_id
@@ -87,7 +87,7 @@ class CSVService:
                     cursor.execute(query, store_ids)
                 else:
                     query = """
-                        SELECT id, store_id, category_id, product_id, product_name, 
+                        SELECT id, store_id, store_name, category_id, product_id, product_name, 
                             product_url, image_url, current_price, original_price, 
                             stock_status, is_active, last_synced_at, created_at, 
                             updated_at, has_variants, variants, brand_id
@@ -123,6 +123,7 @@ class CSVService:
                     fieldnames = [
                         "id",
                         "store_id",
+                        "store_name",
                         "category_id",
                         "product_id",
                         "product_name",

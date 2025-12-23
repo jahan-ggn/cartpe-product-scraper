@@ -91,7 +91,7 @@ class ImageService:
                     WHERE image_url IS NOT NULL 
                     AND image_url != '' 
                     AND image_url NOT LIKE %s""",
-                    (f"{settings.R2_ENDPOINT_URL}%",),
+                    (f"{settings.R2_PUBLIC_URL}%",),
                 )
                 products = cursor.fetchall()
 

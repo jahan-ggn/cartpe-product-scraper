@@ -106,6 +106,10 @@ class SubscriptionService:
             Dictionary with success status
         """
         try:
+            # Validate store_ids is not empty
+            if not store_ids:
+                raise ValueError("store_ids cannot be empty")
+
             with DatabaseManager.get_connection() as conn:
                 cursor = conn.cursor(dictionary=True)
 
@@ -139,7 +143,18 @@ class SubscriptionService:
                         f"You requested {len(store_ids)} stores."
                     )
 
-                # Delete existing permissions
+                # Validate that all store_ids exist BEFORE deleting
+                cursor.execute(
+                    f"SELECT store_id FROM stores WHERE store_id IN ({','.join(['%s'] * len(store_ids))})",
+                    store_ids,
+                )
+                valid_stores = {row["store_id"] for row in cursor.fetchall()}
+
+                invalid_stores = set(store_ids) - valid_stores
+                if invalid_stores:
+                    raise ValueError(f"Invalid store IDs: {invalid_stores}")
+
+                # Now safe to delete existing permissions
                 cursor.execute(
                     "DELETE FROM subscription_permissions WHERE subscription_id = %s",
                     (subscription_id,),
@@ -173,13 +188,14 @@ class SubscriptionService:
 
     @staticmethod
     def store_woocommerce_credentials(
-        subscription_id: int, consumer_key: str, consumer_secret: str
+        token: str, buyer_domain: str, consumer_key: str, consumer_secret: str
     ) -> Dict:
         """
         Store WooCommerce API credentials for a subscription
 
         Args:
-            subscription_id: Subscription ID
+            token: Subscription token
+            buyer_domain: Buyer's domain
             consumer_key: WooCommerce consumer key
             consumer_secret: WooCommerce consumer secret
 
@@ -187,8 +203,37 @@ class SubscriptionService:
             Dictionary with success status
         """
         try:
+            # Validate WooCommerce credentials format
+            if not consumer_key or not consumer_key.startswith("ck_"):
+                raise ValueError("Invalid consumer_key format. Must start with 'ck_'")
+
+            if not consumer_secret or not consumer_secret.startswith("cs_"):
+                raise ValueError(
+                    "Invalid consumer_secret format. Must start with 'cs_'"
+                )
+
             with DatabaseManager.get_connection() as conn:
-                cursor = conn.cursor()
+                cursor = conn.cursor(dictionary=True)
+
+                # Get subscription by domain and verify token
+                cursor.execute(
+                    """SELECT id, token FROM api_subscriptions 
+                    WHERE buyer_domain = %s AND status = 'active' 
+                    ORDER BY created_at DESC LIMIT 1""",
+                    (buyer_domain,),
+                )
+                subscription = cursor.fetchone()
+
+                if not subscription:
+                    raise ValueError(
+                        f"No active subscription found for domain: {buyer_domain}"
+                    )
+
+                # Verify token matches
+                if subscription["token"] != token:
+                    raise ValueError("Invalid token for this domain")
+
+                subscription_id = subscription["id"]
 
                 query = """
                     INSERT INTO woocommerce_credentials 
@@ -208,6 +253,7 @@ class SubscriptionService:
 
                 return {
                     "subscription_id": subscription_id,
+                    "buyer_domain": buyer_domain,
                     "message": "WooCommerce credentials stored successfully",
                 }
 

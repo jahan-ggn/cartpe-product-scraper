@@ -146,7 +146,7 @@ class ProductScraper:
 
                 # Parse HTML response
                 products = self._parse_products_html(
-                    response.text, store_id, category_id
+                    response.text, store_id, store_name, category_id
                 )
 
                 if not products:
@@ -178,7 +178,7 @@ class ProductScraper:
         return all_products
 
     def _parse_products_html(
-        self, html: str, store_id: int, category_id: int
+        self, html: str, store_id: int, store_name: str, category_id: int
     ) -> List[Dict]:
         """
         Parse HTML response to extract product details
@@ -202,7 +202,7 @@ class ProductScraper:
             for element in product_elements:
                 try:
                     product = self._extract_product_details(
-                        element, store_id, category_id
+                        element, store_id, store_name, category_id
                     )
                     if product:
                         products.append(product)
@@ -216,7 +216,7 @@ class ProductScraper:
         return products
 
     def _extract_product_details(
-        self, element, store_id: int, category_id: int
+        self, element, store_id: int, store_name: str, category_id: int
     ) -> Optional[Dict]:
         """
         Extract details from a single product element
@@ -319,6 +319,7 @@ class ProductScraper:
 
             return {
                 "store_id": store_id,
+                "store_name": store_name,
                 "category_id": category_id,
                 "product_id": product_id,
                 "product_name": product_name,
