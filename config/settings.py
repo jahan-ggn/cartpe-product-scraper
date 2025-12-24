@@ -39,5 +39,8 @@ class Settings:
     R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "")
     R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL", "")
 
+    # DEZGO
+    DEZGO_API_KEY = os.getenv("DEZGO_API_KEY", "")
+
 
 settings = Settings()

@@ -71,11 +71,10 @@ class CSVService:
                     return None
 
                 # Build query based on full/incremental load
-                # Added filter: image_url IS NOT NULL AND image_url != ''
                 if is_full_load:
                     query = """
                         SELECT id, store_id, store_name, category_id, product_id, product_name, 
-                            product_url, image_url, current_price, original_price, 
+                            product_url, image_url, image_url_transparent, current_price, original_price, 
                             stock_status, is_active, last_synced_at, created_at, 
                             updated_at, has_variants, variants, brand_id
                         FROM products
@@ -88,7 +87,7 @@ class CSVService:
                 else:
                     query = """
                         SELECT id, store_id, store_name, category_id, product_id, product_name, 
-                            product_url, image_url, current_price, original_price, 
+                            product_url, image_url, image_url_transparent, current_price, original_price, 
                             stock_status, is_active, last_synced_at, created_at, 
                             updated_at, has_variants, variants, brand_id
                         FROM products
@@ -129,6 +128,7 @@ class CSVService:
                         "product_name",
                         "product_url",
                         "image_url",
+                        "image_url_transparent",
                         "current_price",
                         "original_price",
                         "stock_status",

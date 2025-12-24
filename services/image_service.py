@@ -63,9 +63,12 @@ class ImageService:
             Public URL of uploaded image, or None if failed
         """
         try:
+            # Determine content type based on extension
+            ext = os.path.splitext(local_path)[1].lower()
+            content_type = "image/png" if ext == ".png" else "image/jpeg"
             with open(local_path, "rb") as f:
                 self.s3_client.upload_fileobj(
-                    f, self.bucket_name, r2_key, ExtraArgs={"ContentType": "image/jpeg"}
+                    f, self.bucket_name, r2_key, ExtraArgs={"ContentType": content_type}
                 )
 
             # Construct public URL
@@ -82,12 +85,18 @@ class ImageService:
         try:
             image_service = ImageService()
 
+            # Get stores that need transparent images (pro plan)
+            stores_needing_transparent = image_service._get_stores_needing_transparent()
+            logger.info(
+                f"{len(stores_needing_transparent)} stores need transparent images"
+            )
+
             with DatabaseManager.get_connection() as conn:
                 cursor = conn.cursor(dictionary=True)
 
                 # Get products with non-R2 image URLs
                 cursor.execute(
-                    """SELECT id, image_url FROM products 
+                    """SELECT id, store_id, image_url FROM products 
                     WHERE image_url IS NOT NULL 
                     AND image_url != '' 
                     AND image_url NOT LIKE %s""",
@@ -103,14 +112,14 @@ class ImageService:
                 def process_single_product(product):
                     """Process a single product's image"""
                     product_id = product["id"]
+                    store_id = product["store_id"]
                     original_url = product["image_url"]
 
-                    # Extract filename
                     filename = original_url.split("/")[-1]
-                    r2_key = filename  # Flat structure - just filename
+                    needs_transparent = store_id in stores_needing_transparent
 
                     try:
-                        # Download
+                        # Download original image
                         temp_dir = Path("temp_images")
                         temp_dir.mkdir(exist_ok=True)
                         temp_path = temp_dir / filename
@@ -118,20 +127,51 @@ class ImageService:
                         if not image_service.download_image(
                             original_url, str(temp_path)
                         ):
-                            return (product_id, None)
+                            return (product_id, None, None)
 
-                        # Upload to R2
-                        r2_url = image_service.upload_to_r2(str(temp_path), r2_key)
+                        # Always upload to starter folder
+                        starter_key = f"starter/{filename}"
+                        starter_url = image_service.upload_to_r2(
+                            str(temp_path), starter_key
+                        )
 
-                        # Cleanup
+                        if not starter_url:
+                            if temp_path.exists():
+                                os.remove(temp_path)
+                            return (product_id, None, None)
+
+                        transparent_url = None
+
+                        # If pro plan subscribers need this store, process transparent
+                        if needs_transparent:
+                            transparent_path = image_service.remove_background(
+                                str(temp_path)
+                            )
+
+                            if transparent_path:
+                                # Upload to transparent folder (use PNG extension)
+                                transparent_filename = (
+                                    f"{os.path.splitext(filename)[0]}.png"
+                                )
+                                transparent_key = f"transparent/{transparent_filename}"
+                                transparent_url = image_service.upload_to_r2(
+                                    transparent_path, transparent_key
+                                )
+
+                                # Cleanup transparent file
+                                if os.path.exists(transparent_path):
+                                    os.remove(transparent_path)
+
+                        # Cleanup original download
                         if temp_path.exists():
                             os.remove(temp_path)
 
-                        return (product_id, r2_url)
+                        # Return both URLs
+                        return (product_id, starter_url, transparent_url)
 
                     except Exception as e:
                         logger.error(f"Error processing product {product_id}: {str(e)}")
-                        return (product_id, None)
+                        return (product_id, None, None)
 
                 # Process in parallel with 10 workers
                 with ThreadPoolExecutor(max_workers=10) as executor:
@@ -140,14 +180,15 @@ class ImageService:
                     }
 
                     for future in as_completed(futures):
-                        product_id, r2_url = future.result()
+                        product_id, starter_url, transparent_url = future.result()
 
-                        if r2_url:
-                            # Update database
+                        if starter_url:
+                            # Update database with starter URL
                             cursor.execute(
-                                "UPDATE products SET image_url = %s, updated_at = updated_at WHERE id = %s",
-                                (r2_url, product_id),
+                                "UPDATE products SET image_url = %s, image_url_transparent = %s, updated_at = updated_at WHERE id = %s",
+                                (starter_url, transparent_url, product_id),
                             )
+
                             conn.commit()
                             success += 1
 
@@ -165,23 +206,85 @@ class ImageService:
             raise
 
     def delete_all_images(self):
-        """Delete all images from R2 bucket"""
+        """Delete all images from R2 bucket with pagination support"""
         try:
-            # List all objects
-            response = self.s3_client.list_objects_v2(Bucket=self.bucket_name)
+            deleted_count = 0
+            continuation_token = None
 
-            if "Contents" not in response:
-                logger.info("No images to delete")
-                return
+            while True:
+                # List objects with pagination
+                if continuation_token:
+                    response = self.s3_client.list_objects_v2(
+                        Bucket=self.bucket_name, ContinuationToken=continuation_token
+                    )
+                else:
+                    response = self.s3_client.list_objects_v2(Bucket=self.bucket_name)
 
-            # Delete all objects
-            objects = [{"Key": obj["Key"]} for obj in response["Contents"]]
-            self.s3_client.delete_objects(
-                Bucket=self.bucket_name, Delete={"Objects": objects}
-            )
+                if "Contents" not in response:
+                    logger.info("No images to delete")
+                    break
 
-            logger.info(f"Deleted {len(objects)} images from R2")
+                # Delete current batch
+                objects = [{"Key": obj["Key"]} for obj in response["Contents"]]
+                self.s3_client.delete_objects(
+                    Bucket=self.bucket_name, Delete={"Objects": objects}
+                )
+                deleted_count += len(objects)
+
+                # Check if more pages exist
+                if not response.get("IsTruncated"):
+                    break
+
+                continuation_token = response.get("NextContinuationToken")
+
+            logger.info(f"Deleted {deleted_count} images from R2")
 
         except Exception as e:
             logger.error(f"Error deleting images: {str(e)}")
             raise
+
+    @staticmethod
+    def _get_stores_needing_transparent() -> set:
+        """Get set of store_ids that have pro plan subscribers"""
+        try:
+            with DatabaseManager.get_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+
+                cursor.execute(
+                    """
+                    SELECT DISTINCT sp.store_id 
+                    FROM subscription_permissions sp
+                    JOIN api_subscriptions sub ON sp.subscription_id = sub.id
+                    WHERE sub.plan_name = 'pro' 
+                    AND sub.status = 'active'
+                    AND sub.expires_at > NOW()
+                """
+                )
+
+                return {row["store_id"] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.error(f"Error getting stores needing transparent: {e}")
+            return set()
+
+    def remove_background(self, image_path: str) -> Optional[str]:
+        """Remove background from image using Dezgo API"""
+        try:
+            url = "https://api.dezgo.com/remove-background"
+
+            with open(image_path, "rb") as f:
+                files = {"image": f}
+                headers = {"X-Dezgo-Key": settings.DEZGO_API_KEY}
+
+                response = requests.post(url, files=files, headers=headers, timeout=60)
+                response.raise_for_status()
+
+            # Save as PNG (supports transparency)
+            transparent_path = f"{os.path.splitext(image_path)[0]}.png"
+            with open(transparent_path, "wb") as f:
+                f.write(response.content)
+
+            return transparent_path
+
+        except Exception as e:
+            logger.error(f"Error removing background: {e}")
+            return None

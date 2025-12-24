@@ -325,6 +325,7 @@ class ProductScraper:
                 "product_name": product_name,
                 "product_url": product_url,
                 "image_url": image_url,
+                "image_url_transparent": None,
                 "current_price": current_price,
                 "original_price": original_price,
                 "has_variants": has_variants,
