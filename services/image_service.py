@@ -9,6 +9,7 @@ from typing import Optional
 from config.settings import settings
 from config.database import DatabaseManager
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -266,25 +267,37 @@ class ImageService:
             logger.error(f"Error getting stores needing transparent: {e}")
             return set()
 
-    def remove_background(self, image_path: str) -> Optional[str]:
-        """Remove background from image using Dezgo API"""
-        try:
-            url = "https://api.dezgo.com/remove-background"
+    def remove_background(self, image_path: str, max_retries: int = 3) -> Optional[str]:
+        """Remove background from image using Dezgo API with retry logic"""
+        url = "https://api.dezgo.com/remove-background"
 
-            with open(image_path, "rb") as f:
-                files = {"image": f}
-                headers = {"X-Dezgo-Key": settings.DEZGO_API_KEY}
+        for attempt in range(max_retries):
+            try:
+                with open(image_path, "rb") as f:
+                    files = {"image": f}
+                    headers = {"X-Dezgo-Key": settings.DEZGO_API_KEY}
 
-                response = requests.post(url, files=files, headers=headers, timeout=60)
-                response.raise_for_status()
+                    response = requests.post(
+                        url, files=files, headers=headers, timeout=120
+                    )
+                    response.raise_for_status()
 
-            # Save as PNG (supports transparency)
-            transparent_path = f"{os.path.splitext(image_path)[0]}.png"
-            with open(transparent_path, "wb") as f:
-                f.write(response.content)
+                # Save as PNG (supports transparency)
+                transparent_path = f"{os.path.splitext(image_path)[0]}.png"
+                with open(transparent_path, "wb") as f:
+                    f.write(response.content)
 
-            return transparent_path
+                return transparent_path
 
-        except Exception as e:
-            logger.error(f"Error removing background: {e}")
-            return None
+            except requests.Timeout:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Dezgo timeout (attempt {attempt + 1}/{max_retries}), retrying..."
+                    )
+                    time.sleep(5)
+                else:
+                    logger.error(f"Dezgo failed after {max_retries} attempts: Timeout")
+                    return None
+            except Exception as e:
+                logger.error(f"Error removing background: {e}")
+                return None
