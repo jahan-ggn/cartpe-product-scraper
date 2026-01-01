@@ -97,7 +97,7 @@ class ImageService:
 
                 # Get products with non-R2 image URLs
                 cursor.execute(
-                    """SELECT id, store_id, image_url FROM products 
+                    """SELECT id, store_id, image_url, product_images FROM products 
                     WHERE image_url IS NOT NULL 
                     AND image_url != '' 
                     AND image_url NOT LIKE %s""",
@@ -115,6 +115,7 @@ class ImageService:
                     product_id = product["id"]
                     store_id = product["store_id"]
                     original_url = product["image_url"]
+                    product_images_str = product.get("product_images")
 
                     filename = original_url.split("/")[-1]
                     needs_transparent = False
@@ -167,12 +168,48 @@ class ImageService:
                         if temp_path.exists():
                             os.remove(temp_path)
 
-                        # Return both URLs
-                        return (product_id, starter_url, transparent_url)
+                        # Process additional images
+                        processed_product_images = None
+                        if product_images_str:
+                            image_urls = [
+                                url.strip()
+                                for url in product_images_str.split(",")
+                                if url.strip()
+                            ]
+                            processed_urls = []
+
+                            for img_url in image_urls:
+                                img_filename = img_url.split("/")[-1]
+                                img_temp_path = temp_dir / img_filename
+
+                                if image_service.download_image(
+                                    img_url, str(img_temp_path)
+                                ):
+                                    img_key = f"starter/{img_filename}"
+                                    img_r2_url = image_service.upload_to_r2(
+                                        str(img_temp_path), img_key
+                                    )
+                                    if img_r2_url:
+                                        processed_urls.append(img_r2_url)
+
+                                    if img_temp_path.exists():
+                                        os.remove(img_temp_path)
+
+                            processed_product_images = (
+                                ", ".join(processed_urls) if processed_urls else None
+                            )
+
+                        # Return all URLs
+                        return (
+                            product_id,
+                            starter_url,
+                            transparent_url,
+                            processed_product_images,
+                        )
 
                     except Exception as e:
                         logger.error(f"Error processing product {product_id}: {str(e)}")
-                        return (product_id, None, None)
+                        return (product_id, None, None, None)
 
                 # Process in parallel with 10 workers
                 with ThreadPoolExecutor(max_workers=10) as executor:
@@ -181,13 +218,23 @@ class ImageService:
                     }
 
                     for future in as_completed(futures):
-                        product_id, starter_url, transparent_url = future.result()
+                        (
+                            product_id,
+                            starter_url,
+                            transparent_url,
+                            product_images_urls,
+                        ) = future.result()
 
                         if starter_url:
                             # Update database with starter URL
                             cursor.execute(
-                                "UPDATE products SET image_url = %s, image_url_transparent = %s, updated_at = updated_at WHERE id = %s",
-                                (starter_url, transparent_url, product_id),
+                                "UPDATE products SET image_url = %s, image_url_transparent = %s, product_images = %s, updated_at = updated_at WHERE id = %s",
+                                (
+                                    starter_url,
+                                    transparent_url,
+                                    product_images_urls,
+                                    product_id,
+                                ),
                             )
 
                             conn.commit()

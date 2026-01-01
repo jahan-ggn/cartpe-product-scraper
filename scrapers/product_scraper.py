@@ -275,6 +275,15 @@ class ProductScraper:
             if image_url and "gallery_sm" in image_url:
                 image_url = image_url.replace("gallery_sm", "gallery_md")
 
+            # Extract additional product images from product page
+            try:
+                product_images = self.extract_product_images(product_url)
+            except requests.HTTPError as e:
+                if e.response.status_code == 404:
+                    logger.warning(f"Product page not found, skipping: {product_url}")
+                    return None  # Skip this product entirely
+                product_images = None
+
             # Extract prices
             price_elements = element.select("h6")[1:]
             current_price = None
@@ -326,6 +335,7 @@ class ProductScraper:
                 "product_url": product_url,
                 "image_url": image_url,
                 "image_url_transparent": None,
+                "product_images": product_images,
                 "current_price": current_price,
                 "original_price": original_price,
                 "has_variants": has_variants,
@@ -336,6 +346,46 @@ class ProductScraper:
 
         except Exception as e:
             logger.warning(f"Error extracting product details: {e}")
+            return None
+
+    def extract_product_images(self, product_url: str) -> Optional[str]:
+        """
+        Extract all additional product images from product detail page
+
+        Args:
+            product_url: URL of the product detail page
+
+        Returns:
+            Comma-separated image URLs (excluding the first/primary image), or None
+        """
+        try:
+            response = self.session.get(product_url, timeout=settings.REQUEST_TIMEOUT)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.text, "lxml")
+
+            # Find all main-image slides
+            image_elements = soup.select("li.main-image img.img-fluid")
+
+            if len(image_elements) <= 1:
+                return None  # Only primary image or no images
+
+            # Extract URLs, skip first one (primary image)
+            image_urls = [img.get("src", "").strip() for img in image_elements[1:]]
+
+            # Filter out empty URLs and join
+            image_urls = [url for url in image_urls if url]
+
+            return ", ".join(image_urls) if image_urls else None
+
+        except requests.HTTPError as e:
+            if e.response.status_code == 404:
+                raise  # Re-raise 404 to skip product
+            logger.warning(f"Error extracting images from {product_url}: {e}")
+            return None
+
+        except Exception as e:
+            logger.warning(f"Error extracting images from {product_url}: {e}")
             return None
 
     def close(self):

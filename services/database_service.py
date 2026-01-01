@@ -156,15 +156,16 @@ class ProductService:
         query = """
             INSERT INTO products 
             (store_id, store_name, category_id, product_id, product_name, product_url, 
-            image_url, image_url_transparent, current_price, original_price, has_variants, variants,
+            image_url, image_url_transparent, product_images, current_price, original_price, has_variants, variants,
             stock_status, is_active, brand_id, last_synced_at, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
             category_id = VALUES(category_id),
             product_name = VALUES(product_name),
             product_url = VALUES(product_url),
             image_url = VALUES(image_url),
             image_url_transparent = VALUES(image_url_transparent),
+            product_images = VALUES(product_images),
             current_price = VALUES(current_price),
             original_price = VALUES(original_price),
             has_variants = VALUES(has_variants),
@@ -195,6 +196,7 @@ class ProductService:
                     prod["product_url"],
                     prod["image_url"],
                     prod["image_url_transparent"],
+                    prod["product_images"],
                     prod["current_price"],
                     prod["original_price"],
                     prod["has_variants"],
