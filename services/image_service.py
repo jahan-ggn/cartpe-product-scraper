@@ -87,10 +87,10 @@ class ImageService:
             image_service = ImageService()
 
             # Get stores that need transparent images (pro plan)
-            stores_needing_transparent = image_service._get_stores_needing_transparent()
-            logger.info(
-                f"{len(stores_needing_transparent)} stores need transparent images"
-            )
+            # stores_needing_transparent = image_service._get_stores_needing_transparent()
+            # logger.info(
+            #     f"{len(stores_needing_transparent)} stores need transparent images"
+            # )
 
             with DatabaseManager.get_connection() as conn:
                 cursor = conn.cursor(dictionary=True)
@@ -117,7 +117,7 @@ class ImageService:
                     original_url = product["image_url"]
 
                     filename = original_url.split("/")[-1]
-                    needs_transparent = store_id in stores_needing_transparent
+                    needs_transparent = False
 
                     try:
                         # Download original image
@@ -144,24 +144,24 @@ class ImageService:
                         transparent_url = None
 
                         # If pro plan subscribers need this store, process transparent
-                        if needs_transparent:
-                            transparent_path = image_service.remove_background(
-                                str(temp_path)
-                            )
+                        # if needs_transparent:
+                        #     transparent_path = image_service.remove_background(
+                        #         str(temp_path)
+                        #     )
 
-                            if transparent_path:
-                                # Upload to transparent folder (use PNG extension)
-                                transparent_filename = (
-                                    f"{os.path.splitext(filename)[0]}.png"
-                                )
-                                transparent_key = f"transparent/{transparent_filename}"
-                                transparent_url = image_service.upload_to_r2(
-                                    transparent_path, transparent_key
-                                )
+                        #     if transparent_path:
+                        #         # Upload to transparent folder (use PNG extension)
+                        #         transparent_filename = (
+                        #             f"{os.path.splitext(filename)[0]}.png"
+                        #         )
+                        #         transparent_key = f"transparent/{transparent_filename}"
+                        #         transparent_url = image_service.upload_to_r2(
+                        #             transparent_path, transparent_key
+                        #         )
 
-                                # Cleanup transparent file
-                                if os.path.exists(transparent_path):
-                                    os.remove(transparent_path)
+                        #         # Cleanup transparent file
+                        #         if os.path.exists(transparent_path):
+                        #             os.remove(transparent_path)
 
                         # Cleanup original download
                         if temp_path.exists():
