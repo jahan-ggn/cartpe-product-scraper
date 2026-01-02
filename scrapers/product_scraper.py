@@ -10,6 +10,7 @@ from rapidfuzz import fuzz, process
 from config.settings import settings
 from services.database_service import BrandService
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from services.database_service import ProductService
 
 logger = logging.getLogger(__name__)
 
@@ -184,8 +185,22 @@ class ProductScraper:
         )
 
         if all_products:
+            products_needing_images = []
+
+            for product in all_products:
+                existing_image = ProductService.get_existing_product_image(
+                    store_id, product["product_id"]
+                )
+
+                # Fetch additional images if:
+                # 1. Product doesn't exist (new product) - existing_image is None
+                # 2. Main image has changed - existing_image != current image
+                if existing_image is None or existing_image != product["image_url"]:
+                    products_needing_images.append(product)
+
             logger.info(
-                f"Fetching additional images for {len(all_products)} products..."
+                f"Fetching additional images for {len(products_needing_images)} products "
+                f"(out of {len(all_products)} total)..."
             )
 
             def fetch_single_product_images(product):
@@ -200,16 +215,18 @@ class ProductScraper:
                 except Exception as e:
                     return (product_url, None)
 
-            with ThreadPoolExecutor(max_workers=20) as executor:
-                futures = {
-                    executor.submit(fetch_single_product_images, p): p
-                    for p in all_products
-                }
+            # Only fetch for filtered products
+            image_results = {}
+            if products_needing_images:
+                with ThreadPoolExecutor(max_workers=20) as executor:
+                    futures = {
+                        executor.submit(fetch_single_product_images, p): p
+                        for p in products_needing_images
+                    }
 
-                image_results = {}
-                for future in as_completed(futures):
-                    url, images = future.result()
-                    image_results[url] = images
+                    for future in as_completed(futures):
+                        url, images = future.result()
+                        image_results[url] = images
 
             # Update products with images and remove 404 products
             all_products = [
@@ -220,7 +237,7 @@ class ProductScraper:
 
             logger.info(f"After filtering: {len(all_products)} products remain")
 
-        return all_products
+            return all_products
 
     def _parse_products_html(
         self, html: str, store_id: int, store_name: str, category_id: int

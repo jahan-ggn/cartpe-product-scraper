@@ -178,7 +178,9 @@ class ProductService:
                 product_name = VALUES(product_name) AND
                 current_price = VALUES(current_price) AND
                 original_price = VALUES(original_price) AND
-                stock_status = VALUES(stock_status),
+                stock_status = VALUES(stock_status) AND
+                image_url = VALUES(image_url) AND
+                (product_images = VALUES(product_images) OR (product_images IS NULL AND VALUES(product_images) IS NULL)),
                 updated_at,
                 VALUES(updated_at)
             )
@@ -268,6 +270,32 @@ class ProductService:
         except Exception as e:
             logger.error(f"Error marking products inactive: {e}")
             return 0
+
+    @staticmethod
+    def get_existing_product_image(store_id: int, product_id: str) -> Optional[str]:
+        """
+        Get existing product's main image URL
+
+        Args:
+            store_id: Store ID
+            product_id: Product ID
+
+        Returns:
+            Image URL or None if product doesn't exist
+        """
+        query = """
+            SELECT image_url FROM products 
+            WHERE store_id = %s AND product_id = %s
+        """
+
+        try:
+            result = DatabaseManager.execute_query(
+                query, (store_id, product_id), fetch=True
+            )
+            return result[0]["image_url"] if result else None
+        except Exception as e:
+            logger.error(f"Error fetching product image: {e}")
+            return None
 
 
 class BrandService:
