@@ -1,6 +1,7 @@
 """Main entry point for the complete scraping pipeline"""
 
 import logging
+import traceback
 from utils.logger import setup_logger
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from scrapers.token_scraper import TokenScraper
@@ -11,6 +12,7 @@ from config.settings import settings
 from services.push_orchestrator import PushOrchestrator
 from services.csv_service import CSVService
 from services.image_service import ImageService
+from services.whatsapp_service import WhatsAppService
 
 
 setup_logger()
@@ -39,6 +41,10 @@ def extract_and_update_token(store_data: dict, scraper: TokenScraper) -> tuple:
 
     except Exception as e:
         logger.error(f"Error processing store {store_name}: {e}")
+        WhatsAppService.send_error_notification(
+            error_message=f"Token extraction failed for {store_name}",
+            stack_trace=traceback.format_exc(),
+        )
         return (store_id, store_name, False)
 
 
@@ -48,42 +54,51 @@ def run_token_extraction():
     logger.info("STEP 1: Token Extraction")
     logger.info("=" * 80)
 
-    stores = StoreService.get_all_stores()
-
-    if not stores:
-        logger.info("All stores have tokens. Skipping token extraction.")
-        return True
-
-    logger.info(f"Extracting tokens for {len(stores)} stores")
-
-    scraper = TokenScraper()
-    successful = 0
-    failed = 0
-
     try:
-        with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
-            future_to_store = {
-                executor.submit(extract_and_update_token, store, scraper): store
-                for store in stores
-            }
+        stores = StoreService.get_all_stores()
 
-            for future in as_completed(future_to_store):
-                store_id, store_name, success = future.result()
+        if not stores:
+            logger.info("All stores have tokens. Skipping token extraction.")
+            return True
 
-                if success:
-                    successful += 1
-                    logger.info(f"✓ Token extracted: {store_name}")
-                else:
-                    failed += 1
-                    logger.error(f"✗ Token failed: {store_name}")
+        logger.info(f"Extracting tokens for {len(stores)} stores")
 
-    finally:
-        scraper.close()
+        scraper = TokenScraper()
+        successful = 0
+        failed = 0
 
-    logger.info(
-        f"Token extraction complete: {successful} successful, {failed} failed\n"
-    )
-    return failed == 0
+        try:
+            with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
+                future_to_store = {
+                    executor.submit(extract_and_update_token, store, scraper): store
+                    for store in stores
+                }
+
+                for future in as_completed(future_to_store):
+                    store_id, store_name, success = future.result()
+
+                    if success:
+                        successful += 1
+                        logger.info(f"✓ Token extracted: {store_name}")
+                    else:
+                        failed += 1
+                        logger.error(f"✗ Token failed: {store_name}")
+
+        finally:
+            scraper.close()
+
+        logger.info(
+            f"Token extraction complete: {successful} successful, {failed} failed\n"
+        )
+        return failed == 0
+
+    except Exception as e:
+        logger.error(f"Critical error in token extraction: {e}", exc_info=True)
+        WhatsAppService.send_error_notification(
+            error_message="Token extraction step failed",
+            stack_trace=traceback.format_exc(),
+        )
+        return False
 
 
 # ============================================================================
@@ -109,6 +124,10 @@ def scrape_and_save_categories(store_data: dict, scraper: CategoryScraper) -> tu
 
     except Exception as e:
         logger.error(f"Error processing store {store_name}: {e}")
+        WhatsAppService.send_error_notification(
+            error_message=f"Category scraping failed for {store_name}",
+            stack_trace=traceback.format_exc(),
+        )
         return (store_id, store_name, 0, False)
 
 
@@ -118,46 +137,55 @@ def run_category_scraping():
     logger.info("STEP 2: Category Scraping")
     logger.info("=" * 80)
 
-    stores = StoreService.get_all_stores()
-
-    if not stores:
-        logger.info("No stores found in database.")
-        return False
-
-    logger.info(f"Scraping categories for {len(stores)} stores")
-
-    scraper = CategoryScraper()
-    successful = 0
-    failed = 0
-    total_categories = 0
-
     try:
-        with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
-            future_to_store = {
-                executor.submit(scrape_and_save_categories, store, scraper): store
-                for store in stores
-            }
+        stores = StoreService.get_all_stores()
 
-            for future in as_completed(future_to_store):
-                store_id, store_name, category_count, success = future.result()
+        if not stores:
+            logger.info("No stores found in database.")
+            return False
 
-                if success:
-                    successful += 1
-                    total_categories += category_count
-                    logger.info(
-                        f"✓ Categories scraped: {store_name} ({category_count})"
-                    )
-                else:
-                    failed += 1
-                    logger.error(f"✗ Categories failed: {store_name}")
+        logger.info(f"Scraping categories for {len(stores)} stores")
 
-    finally:
-        scraper.close()
+        scraper = CategoryScraper()
+        successful = 0
+        failed = 0
+        total_categories = 0
 
-    logger.info(
-        f"Category scraping complete: {total_categories} categories from {successful} stores\n"
-    )
-    return failed == 0
+        try:
+            with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
+                future_to_store = {
+                    executor.submit(scrape_and_save_categories, store, scraper): store
+                    for store in stores
+                }
+
+                for future in as_completed(future_to_store):
+                    store_id, store_name, category_count, success = future.result()
+
+                    if success:
+                        successful += 1
+                        total_categories += category_count
+                        logger.info(
+                            f"✓ Categories scraped: {store_name} ({category_count})"
+                        )
+                    else:
+                        failed += 1
+                        logger.error(f"✗ Categories failed: {store_name}")
+
+        finally:
+            scraper.close()
+
+        logger.info(
+            f"Category scraping complete: {total_categories} categories from {successful} stores\n"
+        )
+        return failed == 0
+
+    except Exception as e:
+        logger.error(f"Critical error in category scraping: {e}", exc_info=True)
+        WhatsAppService.send_error_notification(
+            error_message="Category scraping step failed",
+            stack_trace=traceback.format_exc(),
+        )
+        return False
 
 
 # ============================================================================
@@ -184,12 +212,10 @@ def scrape_store_products(store_data: dict) -> tuple:
 
         for category in categories:
             try:
-                # Mark all products in this category as inactive before scraping
                 ProductService.mark_category_products_inactive(
                     store_id, category["category_id"]
                 )
 
-                # Extract products
                 products = scraper.extract_products(store_data, category)
 
                 if products:
@@ -230,6 +256,10 @@ def scrape_store_products(store_data: dict) -> tuple:
 
     except Exception as e:
         logger.error(f"Error processing store {store_name}: {e}")
+        WhatsAppService.send_error_notification(
+            error_message=f"Product scraping failed for {store_name}",
+            stack_trace=traceback.format_exc(),
+        )
         scraper.close()
         return (store_id, store_name, 0, False)
 
@@ -240,38 +270,47 @@ def run_product_scraping():
     logger.info("STEP 3: Product Scraping")
     logger.info("=" * 80)
 
-    stores = StoreService.get_all_stores()
+    try:
+        stores = StoreService.get_all_stores()
 
-    if not stores:
-        logger.info("No stores found in database.")
+        if not stores:
+            logger.info("No stores found in database.")
+            return False
+
+        logger.info(f"Scraping products for {len(stores)} stores")
+
+        successful = 0
+        failed = 0
+        total_products = 0
+
+        with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
+            future_to_store = {
+                executor.submit(scrape_store_products, store): store for store in stores
+            }
+
+            for future in as_completed(future_to_store):
+                store_id, store_name, product_count, success = future.result()
+
+                if success:
+                    successful += 1
+                    total_products += product_count
+                    logger.info(f"✓ Products scraped: {store_name} ({product_count})")
+                else:
+                    failed += 1
+                    logger.error(f"✗ Products failed: {store_name}")
+
+        logger.info(
+            f"Product scraping complete: {total_products} products from {successful} stores\n"
+        )
+        return failed == 0
+
+    except Exception as e:
+        logger.error(f"Critical error in product scraping: {e}", exc_info=True)
+        WhatsAppService.send_error_notification(
+            error_message="Product scraping step failed",
+            stack_trace=traceback.format_exc(),
+        )
         return False
-
-    logger.info(f"Scraping products for {len(stores)} stores")
-
-    successful = 0
-    failed = 0
-    total_products = 0
-
-    with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
-        future_to_store = {
-            executor.submit(scrape_store_products, store): store for store in stores
-        }
-
-        for future in as_completed(future_to_store):
-            store_id, store_name, product_count, success = future.result()
-
-            if success:
-                successful += 1
-                total_products += product_count
-                logger.info(f"✓ Products scraped: {store_name} ({product_count})")
-            else:
-                failed += 1
-                logger.error(f"✗ Products failed: {store_name}")
-
-    logger.info(
-        f"Product scraping complete: {total_products} products from {successful} stores\n"
-    )
-    return failed == 0
 
 
 # ============================================================================
@@ -289,35 +328,44 @@ def main():
     try:
         CSVService.cleanup_old_csvs()
 
-        # Step 1: Extract tokens
         if not run_token_extraction():
             logger.warning("Token extraction had failures, but continuing...")
 
-        # Step 2: Scrape categories
         if not run_category_scraping():
             logger.warning("Category scraping had failures, but continuing...")
 
-        # Step 3: Scrape products
         if not run_product_scraping():
             logger.warning("Product scraping had failures")
 
-        # Step 4: Process images and upload to R2
         logger.info("=" * 80)
         logger.info("STEP 4: Image Processing")
         logger.info("=" * 80)
-        ImageService.process_all_products()
 
-        # Step 4: Push data to subscriptions
+        try:
+            ImageService.process_all_products()
+        except Exception as e:
+            logger.error(f"Image processing failed: {e}", exc_info=True)
+            WhatsAppService.send_error_notification(
+                error_message="Image processing step failed",
+                stack_trace=traceback.format_exc(),
+            )
+
         logger.info("=" * 80)
         logger.info("STEP 5: Pushing Data to Subscriptions")
         logger.info("=" * 80)
 
-        push_results = PushOrchestrator.push_to_all_subscriptions()
-
-        logger.info(
-            f"Push complete: {push_results['success']} success, "
-            f"{push_results['failed']} failed, {push_results['no_data']} no data"
-        )
+        try:
+            push_results = PushOrchestrator.push_to_all_subscriptions()
+            logger.info(
+                f"Push complete: {push_results['success']} success, "
+                f"{push_results['failed']} failed, {push_results['no_data']} no data"
+            )
+        except Exception as e:
+            logger.error(f"Data push failed: {e}", exc_info=True)
+            WhatsAppService.send_error_notification(
+                error_message="Data push step failed",
+                stack_trace=traceback.format_exc(),
+            )
 
         logger.info("*" * 80)
         logger.info("PIPELINE COMPLETE")
@@ -327,6 +375,10 @@ def main():
         logger.info("Process interrupted by user")
     except Exception as e:
         logger.error(f"Fatal error in pipeline: {e}", exc_info=True)
+        WhatsAppService.send_error_notification(
+            error_message="Pipeline crashed with fatal error",
+            stack_trace=traceback.format_exc(),
+        )
 
 
 if __name__ == "__main__":

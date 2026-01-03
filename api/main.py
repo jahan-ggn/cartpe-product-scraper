@@ -3,11 +3,28 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes import router
+from contextlib import asynccontextmanager
+from services.reminder_scheduler import ReminderScheduler
+
+
+# Create scheduler instance
+reminder_scheduler = ReminderScheduler()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start the scheduler
+    reminder_scheduler.start()
+    yield
+    # Shutdown: Stop the scheduler
+    reminder_scheduler.stop()
+
 
 app = FastAPI(
     title="CartPE Product Scraper API",
     description="API for accessing scraped product data",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Enable CORS
