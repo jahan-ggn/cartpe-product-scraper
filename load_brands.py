@@ -32,6 +32,12 @@ def load_brands_from_file(file_path: str = "brands.txt"):
         # Prepare data
         data = [(brand,) for brand in brands if brand]
 
+        # Truncate table first
+        with DatabaseManager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM brands")
+            conn.commit()
+
         # Bulk insert
         rows_affected = DatabaseManager.execute_many(query, data)
 
