@@ -110,6 +110,9 @@ async def register_subscription(
         if request.plan_duration not in ["monthly", "yearly"]:
             raise ValueError("Invalid plan_duration")
 
+        # Normalize domain - strip trailing slash
+        buyer_domain = request.buyer_domain.rstrip("/")
+
         subscription = SubscriptionService.create_subscription(
             buyer_email=request.buyer_email,
             whatsapp_number=request.whatsapp_number,
