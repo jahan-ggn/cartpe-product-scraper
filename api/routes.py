@@ -19,6 +19,7 @@ class SubscriptionCreateRequest(BaseModel):
     buyer_domain: str
     plan_name: str  # "starter", "pro"
     plan_duration: str  # "monthly", "yearly"
+    whatsapp_number: str
 
 
 class PermissionAddRequest(BaseModel):
@@ -111,6 +112,7 @@ async def register_subscription(
 
         subscription = SubscriptionService.create_subscription(
             buyer_email=request.buyer_email,
+            whatsapp_number=request.whatsapp_number,
             buyer_domain=request.buyer_domain,
             plan_name=request.plan_name,
             plan_duration=request.plan_duration,

@@ -14,7 +14,11 @@ class SubscriptionService:
 
     @staticmethod
     def create_subscription(
-        buyer_email: str, buyer_domain: str, plan_name: str, plan_duration: str
+        buyer_email: str,
+        buyer_domain: str,
+        plan_name: str,
+        plan_duration: str,
+        whatsapp_number: str,
     ) -> Dict:
         """
         Create a new subscription and generate token
@@ -52,8 +56,8 @@ class SubscriptionService:
 
                 query = """
                     INSERT INTO api_subscriptions 
-                    (token, buyer_email, buyer_domain, plan_name, plan_duration, status, created_at, expires_at)
-                    VALUES (%s, %s, %s, %s, %s, 'active', %s, %s)
+                    (token, buyer_email, whatsapp_number, buyer_domain, plan_name, plan_duration, status, created_at, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, %s)
                 """
 
                 cursor.execute(
@@ -61,6 +65,7 @@ class SubscriptionService:
                     (
                         token,
                         buyer_email,
+                        whatsapp_number,
                         buyer_domain,
                         plan_name,
                         plan_duration,
@@ -78,6 +83,7 @@ class SubscriptionService:
                     "subscription_id": subscription_id,
                     "token": token,
                     "buyer_email": buyer_email,
+                    "whatsapp_number": whatsapp_number,
                     "buyer_domain": buyer_domain,
                     "plan_name": plan_name,
                     "plan_duration": plan_duration,
