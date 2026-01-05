@@ -30,6 +30,30 @@ class StoreService:
             return []
 
     @staticmethod
+    def create_store(store_data: Dict) -> Dict:
+        """Create a new store"""
+        query = """
+            INSERT INTO stores (store_name, store_slug, base_url, api_endpoint)
+            VALUES (%s, %s, %s, %s)
+        """
+
+        try:
+            params = (
+                store_data["store_name"],
+                store_data["store_slug"],
+                store_data["base_url"],
+                store_data["api_endpoint"],
+            )
+
+            DatabaseManager.execute_query(query, params)
+            logger.info(f"Created store: {store_data['store_name']}")
+            return {"success": True, "message": "Store created successfully"}
+
+        except Exception as e:
+            logger.error(f"Error creating store: {e}")
+        raise
+
+    @staticmethod
     def update_store_token(store_id: int, token: str) -> bool:
         """
         Update store with extracted web token

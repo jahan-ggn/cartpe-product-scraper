@@ -14,6 +14,13 @@ router = APIRouter(prefix="/api", tags=["stores"])
 
 
 # Pydantic models
+class StoreCreateRequest(BaseModel):
+    store_name: str
+    store_slug: str
+    base_url: str
+    api_endpoint: str
+
+
 class SubscriptionCreateRequest(BaseModel):
     buyer_email: EmailStr
     buyer_domain: str
@@ -100,6 +107,26 @@ def get_stores_with_categories():
     except Exception as e:
         logger.error(f"Error fetching stores with categories: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/stores")
+async def create_store(request: StoreCreateRequest):
+    """Create a new store"""
+    try:
+        result = StoreService.create_store(
+            {
+                "store_name": request.store_name,
+                "store_slug": request.store_slug,
+                "base_url": request.base_url,
+                "api_endpoint": request.api_endpoint,
+            }
+        )
+
+        return {"success": True, "data": result}
+
+    except Exception as e:
+        logger.error(f"Error creating store: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/subscriptions/register")
