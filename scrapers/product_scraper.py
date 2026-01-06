@@ -214,6 +214,7 @@ class ProductScraper:
 
             def fetch_single_product_images(product):
                 product_url = product["product_url"]
+                time.sleep(0.5)
                 try:
                     images = self.extract_product_images(product_url)
                     return (product_url, images)
