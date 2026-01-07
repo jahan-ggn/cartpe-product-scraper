@@ -136,7 +136,18 @@ class ImageService:
                         temp_dir.mkdir(exist_ok=True)
                         temp_path = temp_dir / filename
 
-                        if not image_service.download_image(source_url, str(temp_path)):
+                        try:
+                            if not image_service.download_image(
+                                source_url, str(temp_path)
+                            ):
+                                logger.error(
+                                    f"Failed to download image for product ID {product_id}: {source_url} for store ID {store_id}"
+                                )
+                                return (product_id, None, None, None)
+                        except Exception as e:
+                            logger.error(
+                                f"Error downloading image for product ID {product_id} from {source_url} for store ID {store_id}: {e}"
+                            )
                             return (product_id, None, None, None)
 
                         # Upload to R2
@@ -190,18 +201,33 @@ class ImageService:
                                 img_filename = img_url.split("/")[-1]
                                 img_temp_path = temp_dir / img_filename
 
-                                if image_service.download_image(
-                                    img_url, str(img_temp_path)
-                                ):
+                                try:
+                                    if not image_service.download_image(
+                                        img_url, str(img_temp_path)
+                                    ):
+                                        logger.warning(
+                                            f"Failed to download additional image for product ID {product_id} for store ID {store_id}: {img_url}"
+                                        )
+                                        continue
+
                                     img_key = f"starter/{img_filename}"
                                     img_r2_url = image_service.upload_to_r2(
                                         str(img_temp_path), img_key
                                     )
+
                                     if img_r2_url:
                                         processed_urls.append(img_r2_url)
+                                    else:
+                                        logger.warning(
+                                            f"Failed to upload additional image to R2 for product ID {product_id} for store ID {store_id}: {img_filename}"
+                                        )
+                                except Exception as e:
+                                    logger.error(
+                                        f"Error processing additional image for product ID {product_id} for store ID {store_id} from {img_url}: {e}"
+                                    )
 
-                                    if img_temp_path.exists():
-                                        os.remove(img_temp_path)
+                                if img_temp_path.exists():
+                                    os.remove(img_temp_path)
 
                             processed_product_images = (
                                 ", ".join(processed_urls) if processed_urls else None
