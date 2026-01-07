@@ -277,7 +277,7 @@ class ProductScraper:
             # Only fetch for filtered products
             image_results = {}
             if products_needing_images:
-                with ThreadPoolExecutor(max_workers=20) as executor:
+                with ThreadPoolExecutor(max_workers=10) as executor:
                     futures = {
                         executor.submit(fetch_single_product_images, p): p
                         for p in products_needing_images
