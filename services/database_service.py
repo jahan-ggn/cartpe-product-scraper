@@ -46,13 +46,22 @@ class StoreService:
                 store_data["api_endpoint"],
             )
 
-            DatabaseManager.execute_query(query, params)
+            with DatabaseManager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+                store_id = cursor.lastrowid
+                conn.commit()
+
             logger.info(f"Created store: {store_data['store_name']}")
-            return {"success": True, "message": "Store created successfully"}
+            return {
+                "success": True,
+                "store_id": store_id,
+                "message": "Store created successfully",
+            }
 
         except Exception as e:
             logger.error(f"Error creating store: {e}")
-        raise
+            raise
 
     @staticmethod
     def update_store_token(store_id: int, token: str) -> bool:

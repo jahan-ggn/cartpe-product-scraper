@@ -1,6 +1,6 @@
 """API routes for stores and products"""
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, BackgroundTasks
 from typing import List, Dict
 import logging
 from services.database_service import StoreService, CategoryService
@@ -8,6 +8,9 @@ from services.subscription_service import SubscriptionService
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import List
 from config.settings import settings
+from scrapers.category_scraper import CategoryScraper
+from services.database_service import CategoryService
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["stores"])
@@ -57,6 +60,18 @@ class WooCommerceCredentialsRequest(BaseModel):
 class SubscriptionStatusRequest(BaseModel):
     token: str
     buyer_domain: str
+
+
+def fetch_and_store_categories(store_data: dict):
+    """Background task to fetch categories for a newly created store"""
+    try:
+        scraper = CategoryScraper()
+        categories = scraper.extract_categories(store_data)
+        if categories:
+            CategoryService.bulk_insert_categories(categories)
+        scraper.close()
+    except Exception as e:
+        logger.error(f"Error fetching categories in background: {e}")
 
 
 @router.get("/stores", response_model=List[Dict])
@@ -110,7 +125,7 @@ def get_stores_with_categories():
 
 
 @router.post("/stores")
-async def create_store(request: StoreCreateRequest):
+async def create_store(request: StoreCreateRequest, background_tasks: BackgroundTasks):
     """Create a new store"""
     try:
         result = StoreService.create_store(
@@ -120,6 +135,16 @@ async def create_store(request: StoreCreateRequest):
                 "base_url": request.base_url,
                 "api_endpoint": request.api_endpoint,
             }
+        )
+
+        # Add background task
+        background_tasks.add_task(
+            fetch_and_store_categories,
+            {
+                "store_id": result["store_id"],
+                "store_name": request.store_name,
+                "base_url": request.base_url,
+            },
         )
 
         return {"success": True, "data": result}

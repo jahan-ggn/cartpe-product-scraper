@@ -156,6 +156,55 @@ class ProductScraper:
                         f"Token expired for store: {store_name}"
                     )
 
+                # If empty 500, try alternative endpoint
+                if response.status_code == 500 and len(response.text.strip()) == 0:
+                    try:
+                        # Try alternative endpoint with self_category_slug
+                        api_url_new = f"{base_url}/store_product_loadmore_new"
+                        payload_new = {
+                            "getresult": offset,
+                            "self_category_slug": category_slug,
+                            "orderby": orderby,
+                            "web_token": web_token,
+                        }
+                        response = self.session.post(
+                            api_url_new,
+                            data=payload_new,
+                            timeout=settings.REQUEST_TIMEOUT,
+                        )
+
+                        # Check for token expiration on retry
+                        if response.status_code == 403:
+                            logger.warning(
+                                f"Token expired for {store_name}. Needs re-fetch."
+                            )
+                            raise TokenExpiredException(
+                                f"Token expired for store: {store_name}"
+                            )
+
+                        # If still empty after retry, it's truly empty
+                        if (
+                            response.status_code == 500
+                            and len(response.text.strip()) == 0
+                        ):
+                            logger.info(
+                                f"Empty category: {category_name} (store: {store_name})"
+                            )
+                            break
+
+                    except TokenExpiredException:
+                        raise  # Re-raise token expiration
+                    except requests.RequestException as e:
+                        logger.error(
+                            f"Retry failed for {store_name} - {category_name}: {str(e)}"
+                        )
+                        break
+                    except Exception as e:
+                        logger.error(
+                            f"Unexpected error in retry for {store_name} - {category_name}: {str(e)}"
+                        )
+                        break
+
                 response.raise_for_status()
 
                 # Parse HTML response
@@ -308,6 +357,10 @@ class ProductScraper:
                 return None
 
             product_url = link.get("href", "").strip()
+
+            # Skip products with malformed URLs
+            if "/.html" in product_url:
+                return None
 
             # Extract product name from h6
             h6_tag = element.select_one("h6")

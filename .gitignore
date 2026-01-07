@@ -33,3 +33,5 @@ csv_exports/
 
 temp_images/
 
+truncate_tables.py
+
