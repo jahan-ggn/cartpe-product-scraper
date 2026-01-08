@@ -1,11 +1,16 @@
 """FastAPI application for CartPE scraper"""
 
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes import router
 from contextlib import asynccontextmanager
 from services.reminder_scheduler import ReminderScheduler
+from utils.logger import setup_logger
 
+
+setup_logger()
+logger = logging.getLogger(__name__)
 
 # Create scheduler instance
 reminder_scheduler = ReminderScheduler()

@@ -122,7 +122,7 @@ class SubscriptionService:
                 # Get subscription by domain and verify token
                 cursor.execute(
                     """SELECT id, token FROM api_subscriptions 
-                    WHERE buyer_domain = %s AND status = 'active' 
+                    WHERE buyer_domain = %s AND status = 'active' AND expires_at > NOW()
                     ORDER BY created_at DESC LIMIT 1""",
                     (buyer_domain,),
                 )
@@ -277,7 +277,7 @@ class SubscriptionService:
                 cursor.execute(
                     """SELECT id, token, plan_name, plan_duration, status, expires_at 
                     FROM api_subscriptions 
-                    WHERE buyer_domain = %s AND status = 'active' 
+                    WHERE buyer_domain = %s AND status = 'active' AND expires_at > NOW()
                     ORDER BY created_at DESC LIMIT 1""",
                     (buyer_domain,),
                 )
