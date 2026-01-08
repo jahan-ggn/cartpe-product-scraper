@@ -11,6 +11,7 @@ from config.settings import settings
 from services.database_service import BrandService
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from services.database_service import ProductService
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +22,15 @@ class ProductScraper:
     def __init__(self):
         self.session = requests.Session()
 
-        # Increase connection pool for parallel requests
-        adapter = requests.adapters.HTTPAdapter(pool_connections=30, pool_maxsize=30)
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=30, pool_maxsize=30, max_retries=retry_strategy
+        )
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
