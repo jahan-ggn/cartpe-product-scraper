@@ -237,7 +237,9 @@ class ProductScraper:
             except TokenExpiredException:
                 raise  # Re-raise to handle at higher level
             except requests.RequestException as e:
-                logger.error(f"Error fetching products (page {page}): {str(e)}")
+                logger.error(
+                    f"Error fetching products for category {store_name} - {category_name} (page {page}): {str(e)}"
+                )
                 break
             except Exception as e:
                 logger.error(f"Unexpected error (page {page}): {str(e)}")
