@@ -62,11 +62,11 @@ class ReminderScheduler:
             )
 
     def start(self):
-        """Start the scheduler - runs daily at 9 AM"""
+        """Start the scheduler - runs daily at 11 AM"""
         logger.info("Starting reminder scheduler...")
-        self.scheduler.add_job(self.check_and_send_reminders, "cron", hour=20, minute=0)
+        self.scheduler.add_job(self.check_and_send_reminders, "cron", hour=11, minute=0)
         self.scheduler.start()
-        logger.info("Reminder scheduler started - runs daily at 8 PM")
+        logger.info("Reminder scheduler started - runs daily at 11 AM")
 
     def stop(self):
         """Stop the scheduler"""
