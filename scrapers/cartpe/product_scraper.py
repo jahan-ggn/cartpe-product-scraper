@@ -11,6 +11,7 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config.settings import settings
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -392,7 +393,9 @@ class ProductScraper:
                 ]
                 if variant_list:
                     has_variants = True
-                    variants = ", ".join(variant_list)
+                    variants = json.dumps(
+                        [{"name": "Size", "value": v} for v in variant_list]
+                    )
 
             return {
                 "store_id": store_id,

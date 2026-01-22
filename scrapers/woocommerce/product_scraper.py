@@ -31,17 +31,12 @@ class ProductScraper:
         self.session.mount("https://", adapter)
         self.session.headers.update({"User-Agent": settings.USER_AGENT})
 
-        self.category_filter = None
-
     def extract_products(self, store_data: Dict) -> List[Dict]:
         """Extract all products from store's WooCommerce API"""
         store_id = store_data["store_id"]
         store_name = store_data["store_name"]
         base_url = store_data["base_url"].rstrip("/")
         api_endpoint = store_data.get("api_endpoint", "/wp-json/wc/store")
-
-        # Get category filter
-        self.category_filter = self._get_category_filter(store_data)
 
         products = []
         page = 1
@@ -91,15 +86,6 @@ class ProductScraper:
         logger.info(f"Extracted {len(products)} products from {store_name}")
         return products
 
-    def _get_category_filter(self, store_data: Dict) -> Optional[Set[str]]:
-        """Get category filter set from store data"""
-        category_filter = store_data.get("category_filter")
-        if category_filter:
-            if isinstance(category_filter, str):
-                category_filter = json.loads(category_filter)
-            return set(category_filter)
-        return None
-
     def _parse_product(
         self, prod: Dict, store_id: int, store_name: str
     ) -> Optional[Dict]:
@@ -122,37 +108,20 @@ class ProductScraper:
             current_price = self._parse_price(prices.get("price"))
             original_price = self._parse_price(prices.get("regular_price"))
 
-            # Separate categories and brand based on filter
+            # Extract ALL categories (no brand extraction)
             categories = []
-            brand_name = None
+            for cat in prod.get("categories", []):
+                cat_name = html.unescape(cat["name"])
+                categories.append(
+                    {
+                        "external_category_id": str(cat["id"]),
+                        "category_name": cat_name,
+                        "category_slug": cat["slug"],
+                    }
+                )
 
             description = prod.get("description", "")
             video_url = self._extract_video_url(description)
-
-            for cat in prod.get("categories", []):
-                cat_name = html.unescape(cat["name"])
-
-                if self.category_filter:
-                    # Filter exists: matching = category, non-matching = brand
-                    if cat_name in self.category_filter:
-                        categories.append(
-                            {
-                                "external_category_id": str(cat["id"]),
-                                "category_name": cat_name,
-                                "category_slug": cat["slug"],
-                            }
-                        )
-                    elif brand_name is None:
-                        brand_name = cat_name
-                else:
-                    # No filter: all are categories, no brand extraction
-                    categories.append(
-                        {
-                            "external_category_id": str(cat["id"]),
-                            "category_name": cat_name,
-                            "category_slug": cat["slug"],
-                        }
-                    )
 
             # Determine stock status
             stock_status = (
@@ -186,7 +155,6 @@ class ProductScraper:
                 "has_variants": has_variants,
                 "variants": variants,
                 "categories": categories,
-                "brand_name": brand_name,
                 "video_url": video_url,
             }
 

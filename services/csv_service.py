@@ -64,11 +64,12 @@ class CSVService:
                 placeholders = ",".join(["%s"] * len(store_ids))
 
                 select_columns = """
-                    p.id, p.store_id, p.store_name, p.category_id, p.external_product_id as product_id,
+                    p.id, p.store_id, p.store_name, p.external_product_id as product_id,
                     p.product_name, p.product_url, p.image_url, p.image_url_transparent, p.product_images,
                     p.current_price, p.original_price, p.stock_status, p.is_active,
                     p.last_synced_at, p.created_at, p.updated_at, p.has_variants, p.variants,
-                    p.brand_id, b.brand_name, p.video_url, p.short_description, p.description
+                    p.brand_id, b.brand_name, p.video_url, p.short_description, p.description, p.attributes,
+                    GROUP_CONCAT(DISTINCT c.category_id ORDER BY c.category_id SEPARATOR ', ') as categories
                 """
 
                 if is_full_load:
@@ -76,8 +77,11 @@ class CSVService:
                         SELECT {select_columns}
                         FROM products p
                         LEFT JOIN brands b ON p.brand_id = b.brand_id
+                        LEFT JOIN product_categories pc ON p.id = pc.product_id
+                        LEFT JOIN categories c ON pc.category_id = c.category_id
                         WHERE p.store_id IN ({placeholders})
                         AND p.image_url IS NOT NULL AND p.image_url != ''
+                        GROUP BY p.id
                     """
                     cursor.execute(query, store_ids)
                 else:
@@ -85,9 +89,12 @@ class CSVService:
                         SELECT {select_columns}
                         FROM products p
                         LEFT JOIN brands b ON p.brand_id = b.brand_id
+                        LEFT JOIN product_categories pc ON p.id = pc.product_id
+                        LEFT JOIN categories c ON pc.category_id = c.category_id
                         WHERE p.store_id IN ({placeholders})
                         AND (p.updated_at > %s OR p.created_at > %s)
                         AND p.image_url IS NOT NULL AND p.image_url != ''
+                        GROUP BY p.id
                     """
                     cursor.execute(query, store_ids + [last_push_at, last_push_at])
 
@@ -114,7 +121,6 @@ class CSVService:
                     "id",
                     "store_id",
                     "store_name",
-                    "category_id",
                     "product_id",
                     "product_name",
                     "product_url",
@@ -135,6 +141,8 @@ class CSVService:
                     "video_url",
                     "short_description",
                     "description",
+                    "attributes",
+                    "categories",
                 ]
 
                 with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:

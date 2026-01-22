@@ -35,23 +35,16 @@ class StoreService:
     def create_store(store_data: Dict) -> Dict:
         """Create a new store"""
         query = """
-            INSERT INTO stores (store_type, store_name, store_slug, base_url, api_endpoint, category_filter)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO stores (store_type, store_name, store_slug, base_url, api_endpoint)
+            VALUES (%s, %s, %s, %s, %s)
         """
         try:
-            category_filter = store_data.get("category_filter")
-            if isinstance(category_filter, list):
-                category_filter = (
-                    json.dumps(category_filter) if category_filter else None
-                )
-
             params = (
                 store_data.get("store_type", "cartpe"),
                 store_data["store_name"],
                 store_data["store_slug"],
                 store_data["base_url"],
                 store_data.get("api_endpoint"),
-                category_filter,
             )
 
             with DatabaseManager.get_connection() as conn:
@@ -190,14 +183,13 @@ class ProductService:
 
         query = f"""
             INSERT INTO products 
-            (store_id, store_name, category_id, external_product_id, product_name, product_url, 
+            (store_id, store_name, external_product_id, product_name, product_url, 
             image_url, source_image_url, image_url_transparent, product_images, 
             current_price, original_price, has_variants, variants,
             stock_status, is_active, brand_id, video_url, short_description, description, attributes,
             last_synced_at, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
-            category_id = VALUES(category_id),
             product_name = VALUES(product_name),
             product_url = VALUES(product_url),
             image_url = IF(image_url LIKE '%{r2_domain}%', image_url, VALUES(image_url)),
@@ -229,37 +221,24 @@ class ProductService:
 
         try:
             now = datetime.now()
-            data = []
 
-            for prod in products:
-                # Get brand_id
-                brand_id = prod.get("brand_id")
-                if not brand_id and prod.get("brand_name"):
-                    brand_id = BrandService.get_or_create_brand(prod["brand_name"])
+            with DatabaseManager.get_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
 
-                # Get category_id
-                category_id = prod.get("category_id")
-                if (
-                    not category_id
-                    and prod.get("categories")
-                    and len(prod["categories"]) > 0
-                ):
-                    cat = prod["categories"][0]
-                    if cat.get("external_category_id"):
-                        category_id = CategoryService.get_category_id_by_external_id(
-                            prod["store_id"], cat["external_category_id"]
-                        )
+                for prod in products:
+                    # Get brand_id
+                    brand_id = prod.get("brand_id")
+                    if not brand_id and prod.get("brand_name"):
+                        brand_id = BrandService.get_or_create_brand(prod["brand_name"])
 
-                # Serialize attributes if present
-                attributes = prod.get("attributes")
-                if isinstance(attributes, list):
-                    attributes = json.dumps(attributes) if attributes else None
+                    # Serialize attributes if present
+                    attributes = prod.get("attributes")
+                    if isinstance(attributes, list):
+                        attributes = json.dumps(attributes) if attributes else None
 
-                data.append(
-                    (
+                    data = (
                         prod["store_id"],
                         prod["store_name"],
-                        category_id,
                         prod["external_product_id"],
                         prod["product_name"],
                         prod.get("product_url"),
@@ -282,9 +261,57 @@ class ProductService:
                         now,  # created_at
                         now,  # updated_at
                     )
-                )
 
-            rows_affected = DatabaseManager.execute_many(query, data)
+                    cursor.execute(query, data)
+                    product_id = cursor.lastrowid
+
+                    # If update, get the existing id
+                    if not product_id:
+                        cursor.execute(
+                            "SELECT id FROM products WHERE store_id = %s AND external_product_id = %s",
+                            (prod["store_id"], prod["external_product_id"]),
+                        )
+                        result = cursor.fetchone()
+                        product_id = result["id"] if result else None
+
+                    # Insert categories into junction table
+                    if product_id and prod.get("categories"):
+                        # Clear existing categories for this product
+                        cursor.execute(
+                            "DELETE FROM product_categories WHERE product_id = %s",
+                            (product_id,),
+                        )
+
+                        for cat in prod["categories"]:
+                            cat_id = None
+                            if cat.get("external_category_id"):
+                                cat_id = CategoryService.get_category_id_by_external_id(
+                                    prod["store_id"], cat["external_category_id"]
+                                )
+                            elif cat.get("category_slug"):
+                                cat_id = CategoryService.get_category_id_by_slug(
+                                    prod["store_id"], cat["category_slug"]
+                                )
+
+                            if cat_id:
+                                cursor.execute(
+                                    "INSERT IGNORE INTO product_categories (product_id, category_id) VALUES (%s, %s)",
+                                    (product_id, cat_id),
+                                )
+
+                    # For CartPE (single category_id passed directly)
+                    elif product_id and prod.get("category_id"):
+                        cursor.execute(
+                            "DELETE FROM product_categories WHERE product_id = %s",
+                            (product_id,),
+                        )
+                        cursor.execute(
+                            "INSERT IGNORE INTO product_categories (product_id, category_id) VALUES (%s, %s)",
+                            (product_id, prod["category_id"]),
+                        )
+
+                conn.commit()
+
             logger.info(f"Upserted {len(products)} products into database")
             return len(products)
 
@@ -296,9 +323,10 @@ class ProductService:
     def mark_category_products_inactive(store_id: int, category_id: int) -> int:
         """Mark all products in a category as inactive (CartPE)"""
         query = """
-            UPDATE products 
-            SET is_active = FALSE, updated_at = updated_at
-            WHERE store_id = %s AND category_id = %s
+            UPDATE products p
+            JOIN product_categories pc ON p.id = pc.product_id
+            SET p.is_active = FALSE
+            WHERE p.store_id = %s AND pc.category_id = %s
         """
         try:
             rows_affected = DatabaseManager.execute_query(

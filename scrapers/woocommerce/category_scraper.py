@@ -25,9 +25,6 @@ class CategoryScraper:
         base_url = store_data["base_url"].rstrip("/")
         api_endpoint = store_data.get("api_endpoint", "/wp-json/wc/store")
 
-        # Get category filter if exists
-        category_filter = self._get_category_filter(store_data)
-
         categories = []
         page = 1
         per_page = 100
@@ -52,10 +49,6 @@ class CategoryScraper:
                 for cat in data:
                     cat_name = html.unescape(cat["name"])
 
-                    # If filter exists, only include matching categories
-                    if category_filter and cat_name not in category_filter:
-                        continue
-
                     categories.append(
                         {
                             "store_id": store_id,
@@ -79,15 +72,6 @@ class CategoryScraper:
             logger.error(f"Unexpected error for {store_name}: {str(e)}")
 
         return categories
-
-    def _get_category_filter(self, store_data: Dict) -> Optional[Set[str]]:
-        """Get category filter set from store data"""
-        category_filter = store_data.get("category_filter")
-        if category_filter:
-            if isinstance(category_filter, str):
-                category_filter = json.loads(category_filter)
-            return set(category_filter)
-        return None
 
     def close(self):
         """Close the requests session"""

@@ -343,7 +343,8 @@ def run_pipeline():
         logger.info("=" * 80)
 
         try:
-            ImageService.process_all_products(store_type="cartpe")
+            ImageService.process_images(store_type="cartpe")
+            ImageService.process_videos(store_type="cartpe")
         except Exception as e:
             logger.error(f"Image processing failed: {e}", exc_info=True)
             WhatsAppService.send_error_notification(
