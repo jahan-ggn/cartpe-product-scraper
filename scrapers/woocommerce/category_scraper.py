@@ -3,9 +3,10 @@
 import html
 import json
 import requests
+import subprocess
 import logging
 import time
-from typing import List, Dict, Set, Optional
+from typing import List, Dict, Optional
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,37 @@ class CategoryScraper:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": settings.USER_AGENT})
+        self.use_vpn = getattr(settings, "USE_VPN", False)
+
+    def _vpn_get(self, url: str, timeout: int = 30) -> Optional[Dict]:
+        """Make GET request through VPN interface"""
+        try:
+            result = subprocess.run(
+                ["curl", "--interface", "tun0", "-s", "-f", url],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                logger.error(f"VPN request failed: {result.stderr}")
+                return None
+            return json.loads(result.stdout)
+        except Exception as e:
+            logger.error(f"VPN request error: {e}")
+            return None
+
+    def _get(self, url: str, params: Dict = None) -> Optional[List]:
+        """Make GET request, using VPN if enabled"""
+        if params:
+            query = "&".join(f"{k}={v}" for k, v in params.items())
+            url = f"{url}?{query}"
+
+        if self.use_vpn:
+            return self._vpn_get(url)
+        else:
+            response = self.session.get(url, timeout=settings.REQUEST_TIMEOUT)
+            response.raise_for_status()
+            return response.json()
 
     def extract_categories(self, store_data: Dict) -> List[Dict]:
         """Extract all categories from store's WooCommerce API"""
@@ -29,26 +61,22 @@ class CategoryScraper:
         page = 1
         per_page = 100
 
-        logger.info(f"Fetching categories for store: {store_name} (ID: {store_id})")
+        logger.info(
+            f"Fetching categories for store: {store_name} (ID: {store_id}) [VPN: {self.use_vpn}]"
+        )
 
         try:
             while True:
                 url = f"{base_url}{api_endpoint}/products/categories"
                 params = {"page": page, "per_page": per_page}
 
-                response = self.session.get(
-                    url, params=params, timeout=settings.REQUEST_TIMEOUT
-                )
-                response.raise_for_status()
-
-                data = response.json()
+                data = self._get(url, params)
 
                 if not data:
                     break
 
                 for cat in data:
                     cat_name = html.unescape(cat["name"])
-
                     categories.append(
                         {
                             "store_id": store_id,

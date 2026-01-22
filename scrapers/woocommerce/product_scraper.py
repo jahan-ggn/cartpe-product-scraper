@@ -3,10 +3,11 @@
 import html
 import json
 import requests
+import subprocess
 import logging
 import time
 import re
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from config.settings import settings
@@ -30,6 +31,37 @@ class ProductScraper:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         self.session.headers.update({"User-Agent": settings.USER_AGENT})
+        self.use_vpn = getattr(settings, "USE_VPN", False)
+
+    def _vpn_get(self, url: str, timeout: int = 60) -> Optional[List]:
+        """Make GET request through VPN interface"""
+        try:
+            result = subprocess.run(
+                ["curl", "--interface", "tun0", "-s", "-f", url],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                logger.error(f"VPN request failed: {result.stderr}")
+                return None
+            return json.loads(result.stdout)
+        except Exception as e:
+            logger.error(f"VPN request error: {e}")
+            return None
+
+    def _get(self, url: str, params: Dict = None) -> Optional[List]:
+        """Make GET request, using VPN if enabled"""
+        if params:
+            query = "&".join(f"{k}={v}" for k, v in params.items())
+            url = f"{url}?{query}"
+
+        if self.use_vpn:
+            return self._vpn_get(url)
+        else:
+            response = self.session.get(url, timeout=settings.REQUEST_TIMEOUT)
+            response.raise_for_status()
+            return response.json()
 
     def extract_products(self, store_data: Dict) -> List[Dict]:
         """Extract all products from store's WooCommerce API"""
@@ -42,19 +74,16 @@ class ProductScraper:
         page = 1
         per_page = 100
 
-        logger.info(f"Fetching products for store: {store_name} (ID: {store_id})")
+        logger.info(
+            f"Fetching products for store: {store_name} (ID: {store_id}) [VPN: {self.use_vpn}]"
+        )
 
         while True:
             try:
                 url = f"{base_url}{api_endpoint}/products"
                 params = {"page": page, "per_page": per_page}
 
-                response = self.session.get(
-                    url, params=params, timeout=settings.REQUEST_TIMEOUT
-                )
-                response.raise_for_status()
-
-                data = response.json()
+                data = self._get(url, params)
 
                 if not data:
                     break
@@ -91,7 +120,6 @@ class ProductScraper:
     ) -> Optional[Dict]:
         """Parse a single product from API response"""
         try:
-            # Extract primary image
             image_url = None
             product_images = []
 
@@ -103,12 +131,10 @@ class ProductScraper:
                         if img.get("src"):
                             product_images.append(img["src"])
 
-            # Extract prices
             prices = prod.get("prices", {})
             current_price = self._parse_price(prices.get("price"))
             original_price = self._parse_price(prices.get("regular_price"))
 
-            # Extract ALL categories (no brand extraction)
             categories = []
             for cat in prod.get("categories", []):
                 cat_name = html.unescape(cat["name"])
@@ -123,12 +149,10 @@ class ProductScraper:
             description = prod.get("description", "")
             video_url = self._extract_video_url(description)
 
-            # Determine stock status
             stock_status = (
                 "in_stock" if prod.get("is_in_stock", True) else "out_of_stock"
             )
 
-            # Extract variants
             has_variants = False
             variants = None
             if prod.get("has_options") or prod.get("variations"):
@@ -163,7 +187,6 @@ class ProductScraper:
             return None
 
     def _parse_price(self, price_str: Optional[str]) -> Optional[float]:
-        """Parse price string to float"""
         if not price_str:
             return None
         try:
@@ -172,7 +195,6 @@ class ProductScraper:
             return None
 
     def _extract_video_url(self, description: str) -> Optional[str]:
-        """Extract video URL from description HTML"""
         if not description:
             return None
         try:
@@ -184,5 +206,4 @@ class ProductScraper:
             return None
 
     def close(self):
-        """Close the requests session"""
         self.session.close()

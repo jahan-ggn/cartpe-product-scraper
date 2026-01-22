@@ -48,5 +48,8 @@ class Settings:
     TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
     ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "")
 
+    # VPN Configuration
+    USE_VPN = os.getenv("USE_VPN", "false").lower() == "true"
+
 
 settings = Settings()
