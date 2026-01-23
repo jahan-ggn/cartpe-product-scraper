@@ -20,6 +20,7 @@ class StoreCreateRequest(BaseModel):
     store_slug: str
     base_url: str
     api_endpoint: str = None
+    use_vpn: bool = False
 
 
 class SubscriptionCreateRequest(BaseModel):
@@ -143,6 +144,7 @@ async def create_store(request: StoreCreateRequest, background_tasks: Background
             "store_slug": request.store_slug,
             "base_url": request.base_url,
             "api_endpoint": request.api_endpoint,
+            "use_vpn": request.use_vpn,
         }
 
         result = StoreService.create_store(store_data)

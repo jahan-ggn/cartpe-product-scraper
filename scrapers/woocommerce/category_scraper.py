@@ -18,7 +18,7 @@ class CategoryScraper:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": settings.USER_AGENT})
-        self.use_vpn = getattr(settings, "USE_VPN", False)
+        self.use_vpn = False  # Set per-store in extract_categories
 
     def _vpn_get(self, url: str, timeout: int = 30) -> Optional[Dict]:
         """Make GET request through VPN interface"""
@@ -52,6 +52,11 @@ class CategoryScraper:
 
     def extract_categories(self, store_data: Dict) -> List[Dict]:
         """Extract all categories from store's WooCommerce API"""
+        # Set VPN based on global setting AND per-store setting
+        self.use_vpn = getattr(settings, "USE_VPN", False) and store_data.get(
+            "use_vpn", False
+        )
+
         store_id = store_data["store_id"]
         store_name = store_data["store_name"]
         base_url = store_data["base_url"].rstrip("/")

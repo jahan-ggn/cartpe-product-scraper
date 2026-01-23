@@ -31,7 +31,7 @@ class ProductScraper:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         self.session.headers.update({"User-Agent": settings.USER_AGENT})
-        self.use_vpn = getattr(settings, "USE_VPN", False)
+        self.use_vpn = False  # Set per-store in extract_products
 
     def _vpn_get(self, url: str, timeout: int = 60) -> Optional[List]:
         """Make GET request through VPN interface"""
@@ -65,6 +65,11 @@ class ProductScraper:
 
     def extract_products(self, store_data: Dict) -> List[Dict]:
         """Extract all products from store's WooCommerce API"""
+        # Set VPN based on global setting AND per-store setting
+        self.use_vpn = getattr(settings, "USE_VPN", False) and store_data.get(
+            "use_vpn", False
+        )
+
         store_id = store_data["store_id"]
         store_name = store_data["store_name"]
         base_url = store_data["base_url"].rstrip("/")

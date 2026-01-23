@@ -2,16 +2,18 @@
 
 import logging
 import os
-import requests
-import boto3
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional
+
+import boto3
+import requests
+from botocore.config import Config
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from config.settings import settings
 from config.database import DatabaseManager
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from botocore.config import Config
-import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ class ImageService:
             config=config,
         )
         self.bucket_name = settings.R2_BUCKET_NAME
-        self.use_vpn = getattr(settings, "USE_VPN", False)
+        self.global_vpn_enabled = getattr(settings, "USE_VPN", False)
 
     def _download_via_vpn(self, url: str, temp_path: str, timeout: int = 360) -> bool:
         """Download file using curl through VPN interface"""
@@ -84,11 +86,15 @@ class ImageService:
 
         return True
 
-    def download_file(self, url: str, temp_path: str, max_retries: int = 3) -> bool:
-        """Download file from URL, using VPN if enabled"""
+    def download_file(
+        self, url: str, temp_path: str, max_retries: int = 3, use_vpn: bool = False
+    ) -> bool:
+        """Download file from URL, using VPN if enabled globally AND per-store"""
+        should_use_vpn = self.global_vpn_enabled and use_vpn
+
         for attempt in range(max_retries):
             try:
-                if self.use_vpn:
+                if should_use_vpn:
                     return self._download_via_vpn(url, temp_path)
                 else:
                     return self._download_via_requests(url, temp_path)
@@ -209,7 +215,8 @@ class ImageService:
                 cursor = conn.cursor(dictionary=True)
 
                 base_query = """
-                    SELECT p.id, p.store_id, p.image_url, p.source_image_url, p.product_images, s.store_type
+                    SELECT p.id, p.store_id, p.image_url, p.source_image_url, p.product_images, 
+                           s.store_type, s.use_vpn
                     FROM products p
                     JOIN stores s ON p.store_id = s.store_id
                     WHERE p.source_image_url IS NOT NULL 
@@ -240,12 +247,15 @@ class ImageService:
                     source_url = product["source_image_url"]
                     product_images_str = product.get("product_images")
                     current_store_type = product["store_type"]
+                    use_vpn = product.get("use_vpn", False)
 
                     filename = f"{product_id}_{source_url.split('/')[-1]}"
                     temp_path = temp_dir / filename
 
                     try:
-                        if not image_service.download_file(source_url, str(temp_path)):
+                        if not image_service.download_file(
+                            source_url, str(temp_path), use_vpn=use_vpn
+                        ):
                             return (product_id, None, None)
 
                         folder = (
@@ -273,7 +283,7 @@ class ImageService:
                                 img_filename = f"{product_id}_{img_url.split('/')[-1]}"
                                 img_temp_path = temp_dir / img_filename
                                 if image_service.download_file(
-                                    img_url, str(img_temp_path)
+                                    img_url, str(img_temp_path), use_vpn=use_vpn
                                 ):
                                     img_r2_key = (
                                         f"{folder}/images/{img_url.split('/')[-1]}"
@@ -335,7 +345,7 @@ class ImageService:
                 cursor = conn.cursor(dictionary=True)
 
                 base_query = """
-                    SELECT p.id, p.video_url, p.description, s.store_type
+                    SELECT p.id, p.video_url, p.description, s.store_type, s.use_vpn
                     FROM products p
                     JOIN stores s ON p.store_id = s.store_id
                     WHERE p.video_url IS NOT NULL 
@@ -363,6 +373,7 @@ class ImageService:
                     video_url = product["video_url"]
                     description = product.get("description")
                     current_store_type = product["store_type"]
+                    use_vpn = product.get("use_vpn", False)
 
                     video_filename = f"{product_id}_{video_url.split('/')[-1]}"
                     video_temp_path = temp_dir / video_filename
@@ -370,7 +381,7 @@ class ImageService:
 
                     try:
                         if not image_service.download_file(
-                            video_url, str(video_temp_path)
+                            video_url, str(video_temp_path), use_vpn=use_vpn
                         ):
                             return (product_id, None, None, None)
 

@@ -35,12 +35,13 @@ class StoreService:
     def create_store(store_data: Dict) -> Dict:
         """Create a new store"""
         query = """
-            INSERT INTO stores (store_type, store_name, store_slug, base_url, api_endpoint)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO stores (store_type, use_vpn, store_name, store_slug, base_url, api_endpoint)
+            VALUES (%s, %s, %s, %s, %s, %s)
         """
         try:
             params = (
                 store_data.get("store_type", "cartpe"),
+                store_data.get("use_vpn", False),
                 store_data["store_name"],
                 store_data["store_slug"],
                 store_data["base_url"],
