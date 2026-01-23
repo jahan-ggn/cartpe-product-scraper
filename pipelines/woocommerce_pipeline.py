@@ -109,19 +109,15 @@ def run_product_scraping():
 
     successful, failed, total_products = 0, 0, 0
 
-    with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(scrape_store_products, store): store for store in stores
-        }
-        for future in as_completed(futures):
-            store_id, store_name, count, ok = future.result()
-            if ok:
-                successful += 1
-                total_products += count
-                logger.info(f"✓ {store_name}: {count} products")
-            else:
-                failed += 1
-                logger.error(f"✗ {store_name}: failed")
+    for store in stores:
+        store_id, store_name, count, ok = scrape_store_products(store)
+        if ok:
+            successful += 1
+            total_products += count
+            logger.info(f"✓ {store_name}: {count} products")
+        else:
+            failed += 1
+            logger.error(f"✗ {store_name}: failed")
 
     logger.info(
         f"Product scraping complete: {total_products} products from {successful} stores\n"
