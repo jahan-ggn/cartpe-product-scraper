@@ -11,6 +11,7 @@ from config.settings import settings
 from config.database import DatabaseManager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.config import Config
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -30,23 +31,80 @@ class ImageService:
             config=config,
         )
         self.bucket_name = settings.R2_BUCKET_NAME
+        self.use_vpn = getattr(settings, "USE_VPN", False)
+
+    def _download_via_vpn(self, url: str, temp_path: str, timeout: int = 360) -> bool:
+        """Download file using curl through VPN interface"""
+        referer = "/".join(url.split("/")[:3]) + "/"
+
+        result = subprocess.run(
+            [
+                "/usr/bin/curl",
+                "--interface",
+                "tun0",
+                "-s",
+                "-f",
+                "-L",
+                "-H",
+                f"User-Agent: {settings.USER_AGENT}",
+                "-H",
+                f"Referer: {referer}",
+                "-o",
+                temp_path,
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+        if result.returncode != 0:
+            raise Exception(
+                f"curl failed with code {result.returncode}: {result.stderr}"
+            )
+
+        return True
+
+    def _download_via_requests(
+        self, url: str, temp_path: str, timeout: int = 360
+    ) -> bool:
+        """Download file using requests library"""
+        referer = "/".join(url.split("/")[:3]) + "/"
+        headers = {
+            "User-Agent": settings.USER_AGENT,
+            "Referer": referer,
+        }
+
+        response = requests.get(url, timeout=timeout, stream=True, headers=headers)
+        response.raise_for_status()
+
+        with open(temp_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        return True
 
     def download_file(self, url: str, temp_path: str, max_retries: int = 3) -> bool:
-        """Download file from URL"""
+        """Download file from URL, using VPN if enabled"""
         for attempt in range(max_retries):
             try:
-                response = requests.get(url, timeout=360, stream=True)
-                response.raise_for_status()
-                with open(temp_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                return True
+                if self.use_vpn:
+                    return self._download_via_vpn(url, temp_path)
+                else:
+                    return self._download_via_requests(url, temp_path)
+
             except Exception as e:
                 if attempt < max_retries - 1:
-                    time.sleep(2**attempt)
+                    wait_time = 2**attempt
+                    logger.warning(
+                        f"Download attempt {attempt + 1} failed, retrying in {wait_time}s: {e}"
+                    )
+                    time.sleep(wait_time)
                 else:
                     logger.error(f"Error downloading {url}: {str(e)}")
                     return False
+
+        return False
 
     def upload_to_r2(
         self, local_path: str, r2_key: str, max_retries: int = 3
