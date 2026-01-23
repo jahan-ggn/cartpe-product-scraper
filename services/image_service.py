@@ -307,7 +307,7 @@ class ImageService:
                             os.remove(temp_path)
                         return (product_id, None, None)
 
-                with ThreadPoolExecutor(max_workers=20) as executor:
+                with ThreadPoolExecutor(max_workers=40) as executor:
                     futures = {
                         executor.submit(process_single_image, p): p for p in products
                     }
@@ -416,7 +416,7 @@ class ImageService:
                             os.remove(compressed_path)
                         return (product_id, None, None, None)
 
-                with ThreadPoolExecutor(max_workers=10) as executor:
+                with ThreadPoolExecutor(max_workers=20) as executor:
                     futures = {
                         executor.submit(process_single_video, p): p for p in products
                     }

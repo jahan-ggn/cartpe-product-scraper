@@ -61,7 +61,6 @@ def run_token_extraction():
             logger.info("No CartPE stores found. Skipping token extraction.")
             return True
 
-        # Filter stores without tokens
         stores_without_tokens = [s for s in stores if not s.get("web_token")]
 
         if not stores_without_tokens:
@@ -236,7 +235,6 @@ def scrape_store_products(store_data: dict) -> tuple:
             finally:
                 scraper.close()
 
-        # Process categories in parallel (max 5 concurrent)
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {executor.submit(scrape_category, cat): cat for cat in categories}
 
@@ -244,7 +242,6 @@ def scrape_store_products(store_data: dict) -> tuple:
                 cat_name, count, error = future.result()
 
                 if error and isinstance(error, TokenExpiredException):
-                    # Token expired - refresh and retry remaining
                     logger.warning(f"Token expired for {store_name}. Re-fetching...")
 
                     token_scraper = TokenScraper()
@@ -254,7 +251,6 @@ def scrape_store_products(store_data: dict) -> tuple:
                     if new_token:
                         StoreService.update_store_token(store_id, new_token)
                         store_data["web_token"] = new_token
-                        # Retry this category
                         cat = futures[future]
                         retry_name, retry_count, _ = scrape_category(cat)
                         total_products += retry_count
@@ -292,16 +288,21 @@ def run_product_scraping():
 
         successful, failed, total_products = 0, 0, 0
 
-        for store in stores:
-            store_id, store_name, product_count, success = scrape_store_products(store)
+        with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(scrape_store_products, store): store for store in stores
+            }
 
-            if success:
-                successful += 1
-                total_products += product_count
-                logger.info(f"✓ Products scraped: {store_name} ({product_count})")
-            else:
-                failed += 1
-                logger.error(f"✗ Products failed: {store_name}")
+            for future in as_completed(futures):
+                store_id, store_name, product_count, success = future.result()
+
+                if success:
+                    successful += 1
+                    total_products += product_count
+                    logger.info(f"✓ Products scraped: {store_name} ({product_count})")
+                else:
+                    failed += 1
+                    logger.error(f"✗ Products failed: {store_name}")
 
         logger.info(
             f"Product scraping complete: {total_products} products from {successful} stores\n"
