@@ -81,10 +81,18 @@ def fetch_and_store_categories_woocommerce(store_data: dict):
         logger.error(f"Error fetching WooCommerce categories in background: {e}")
 
 
-# Routes
 @router.get("/stores", response_model=List[Dict])
 def get_stores_with_categories(store_type: str = None):
     """Get all stores with their categories, optionally filtered by store_type"""
+    valid_types = [None, "cartpe", "woocommerce", "all"]
+    if store_type not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid store_type. Must be one of: cartpe, woocommerce, all",
+        )
+
+    if store_type == "all":
+        store_type = None
     try:
         stores = StoreService.get_all_stores(store_type=store_type)
 
