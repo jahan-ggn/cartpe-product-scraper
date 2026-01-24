@@ -23,7 +23,7 @@ class Settings:
 
     # Scraping Configuration
     REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 30))
-    MAX_WORKERS = int(os.getenv("MAX_WORKERS", 10))
+    MAX_WORKERS = int(os.getenv("MAX_WORKERS", 5))
     REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", 0.5))
     USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
