@@ -207,7 +207,7 @@ class ImageService:
 
     @staticmethod
     def process_images(store_type: str = None):
-        """Process images only for all products needing upload"""
+        """Process images with separate worker pools for VPN and non-VPN"""
         try:
             image_service = ImageService()
 
@@ -216,7 +216,7 @@ class ImageService:
 
                 base_query = """
                     SELECT p.id, p.store_id, p.image_url, p.source_image_url, p.product_images, 
-                           s.store_type, s.use_vpn
+                        s.store_type, s.use_vpn
                     FROM products p
                     JOIN stores s ON p.store_id = s.store_id
                     WHERE p.source_image_url IS NOT NULL 
@@ -236,7 +236,14 @@ class ImageService:
                     cursor.execute(base_query, (f"{settings.R2_PUBLIC_URL}%",))
 
                 products = cursor.fetchall()
-                logger.info(f"Processing images for {len(products)} products")
+
+                # Split by VPN requirement
+                vpn_products = [p for p in products if p.get("use_vpn")]
+                non_vpn_products = [p for p in products if not p.get("use_vpn")]
+
+                logger.info(
+                    f"Processing images: {len(non_vpn_products)} non-VPN, {len(vpn_products)} VPN"
+                )
 
                 success, failed = 0, 0
                 temp_dir = Path("temp_images")
@@ -307,25 +314,39 @@ class ImageService:
                             os.remove(temp_path)
                         return (product_id, None, None)
 
-                with ThreadPoolExecutor(max_workers=40) as executor:
-                    futures = {
-                        executor.submit(process_single_image, p): p for p in products
-                    }
+                def process_batch(product_list, max_workers, label):
+                    nonlocal success, failed
+                    if not product_list:
+                        return
 
-                    for future in as_completed(futures):
-                        product_id, r2_url, product_images = future.result()
+                    logger.info(f"Starting {label} batch with {max_workers} workers...")
 
-                        if r2_url:
-                            cursor.execute(
-                                """UPDATE products SET image_url = %s, product_images = %s, updated_at = updated_at WHERE id = %s""",
-                                (r2_url, product_images, product_id),
-                            )
-                            conn.commit()
-                            success += 1
-                            if success % 100 == 0:
-                                logger.info(f"Processed {success} product images...")
-                        else:
-                            failed += 1
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        futures = {
+                            executor.submit(process_single_image, p): p
+                            for p in product_list
+                        }
+
+                        for future in as_completed(futures):
+                            product_id, r2_url, product_images = future.result()
+
+                            if r2_url:
+                                cursor.execute(
+                                    """UPDATE products SET image_url = %s, product_images = %s, updated_at = updated_at WHERE id = %s""",
+                                    (r2_url, product_images, product_id),
+                                )
+                                conn.commit()
+                                success += 1
+                                if success % 100 == 0:
+                                    logger.info(
+                                        f"Processed {success} product images..."
+                                    )
+                            else:
+                                failed += 1
+
+                # Process non-VPN first (fast), then VPN (throttled)
+                process_batch(non_vpn_products, max_workers=30, label="non-VPN")
+                process_batch(vpn_products, max_workers=4, label="VPN")
 
                 logger.info(
                     f"Image processing complete: {success} success, {failed} failed"
@@ -337,7 +358,7 @@ class ImageService:
 
     @staticmethod
     def process_videos(store_type: str = None):
-        """Process videos only for products with video_url"""
+        """Process videos with separate worker pools for VPN and non-VPN"""
         try:
             image_service = ImageService()
 
@@ -362,7 +383,14 @@ class ImageService:
                     cursor.execute(base_query, (f"{settings.R2_PUBLIC_URL}%",))
 
                 products = cursor.fetchall()
-                logger.info(f"Processing videos for {len(products)} products")
+
+                # Split by VPN requirement
+                vpn_products = [p for p in products if p.get("use_vpn")]
+                non_vpn_products = [p for p in products if not p.get("use_vpn")]
+
+                logger.info(
+                    f"Processing videos: {len(non_vpn_products)} non-VPN, {len(vpn_products)} VPN"
+                )
 
                 success, failed = 0, 0
                 temp_dir = Path("temp_videos")
@@ -416,43 +444,62 @@ class ImageService:
                             os.remove(compressed_path)
                         return (product_id, None, None, None)
 
-                with ThreadPoolExecutor(max_workers=20) as executor:
-                    futures = {
-                        executor.submit(process_single_video, p): p for p in products
-                    }
+                def process_batch(product_list, max_workers, label):
+                    nonlocal success, failed
+                    if not product_list:
+                        return
 
-                    for future in as_completed(futures):
-                        product_id, r2_video_url, original_video_url, description = (
-                            future.result()
-                        )
+                    logger.info(
+                        f"Starting {label} video batch with {max_workers} workers..."
+                    )
 
-                        if r2_video_url:
-                            updated_description = None
-                            if (
-                                original_video_url
-                                and description
-                                and original_video_url in description
-                            ):
-                                updated_description = description.replace(
-                                    original_video_url, r2_video_url
-                                )
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        futures = {
+                            executor.submit(process_single_video, p): p
+                            for p in product_list
+                        }
 
-                            if updated_description:
-                                cursor.execute(
-                                    """UPDATE products SET video_url = %s, description = %s, updated_at = updated_at WHERE id = %s""",
-                                    (r2_video_url, updated_description, product_id),
-                                )
+                        for future in as_completed(futures):
+                            (
+                                product_id,
+                                r2_video_url,
+                                original_video_url,
+                                description,
+                            ) = future.result()
+
+                            if r2_video_url:
+                                updated_description = None
+                                if (
+                                    original_video_url
+                                    and description
+                                    and original_video_url in description
+                                ):
+                                    updated_description = description.replace(
+                                        original_video_url, r2_video_url
+                                    )
+
+                                if updated_description:
+                                    cursor.execute(
+                                        """UPDATE products SET video_url = %s, description = %s, updated_at = updated_at WHERE id = %s""",
+                                        (r2_video_url, updated_description, product_id),
+                                    )
+                                else:
+                                    cursor.execute(
+                                        """UPDATE products SET video_url = %s, updated_at = updated_at WHERE id = %s""",
+                                        (r2_video_url, product_id),
+                                    )
+                                conn.commit()
+                                success += 1
+                                if success % 10 == 0:
+                                    logger.info(
+                                        f"Processed {success} product videos..."
+                                    )
                             else:
-                                cursor.execute(
-                                    """UPDATE products SET video_url = %s, updated_at = updated_at WHERE id = %s""",
-                                    (r2_video_url, product_id),
-                                )
-                            conn.commit()
-                            success += 1
-                            if success % 10 == 0:
-                                logger.info(f"Processed {success} product videos...")
-                        else:
-                            failed += 1
+                                failed += 1
+
+                # Process non-VPN first (fast), then VPN (throttled)
+                process_batch(non_vpn_products, max_workers=15, label="non-VPN")
+                process_batch(vpn_products, max_workers=3, label="VPN")
 
                 logger.info(
                     f"Video processing complete: {success} success, {failed} failed"

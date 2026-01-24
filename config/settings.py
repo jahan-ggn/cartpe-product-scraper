@@ -19,7 +19,7 @@ class Settings:
 
     # Connection Pool Settings
     POOL_NAME = "smart_store_sync_pool"
-    POOL_SIZE = int(os.getenv("POOL_SIZE", 10))
+    POOL_SIZE = int(os.getenv("POOL_SIZE", 30))
 
     # Scraping Configuration
     REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 30))

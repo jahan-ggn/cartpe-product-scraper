@@ -1,7 +1,9 @@
 """CartPE scraping pipeline"""
 
 import logging
+import time
 import traceback
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from scrapers.cartpe import (
     TokenScraper,
@@ -22,6 +24,45 @@ from services.whatsapp_service import WhatsAppService
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# Global dict to hold per-store token locks
+_store_token_locks = {}
+_store_token_locks_lock = threading.Lock()
+_store_last_token_refresh = {}
+
+
+def get_store_token_lock(store_id: int) -> threading.Lock:
+    """Get or create a lock for a specific store's token refresh"""
+    with _store_token_locks_lock:
+        if store_id not in _store_token_locks:
+            _store_token_locks[store_id] = threading.Lock()
+        return _store_token_locks[store_id]
+
+
+def refresh_token_if_needed(store_data, store_id, store_name, token_lock):
+    """Thread-safe token refresh with double-check"""
+    current_time = time.time()
+
+    with token_lock:
+        # Double-check: skip if token was refreshed in last 30 seconds
+        last_refresh = _store_last_token_refresh.get(store_id, 0)
+        if current_time - last_refresh < 30:
+            logger.info(f"Token for {store_name} was recently refreshed, skipping")
+            return True
+
+        token_scraper = TokenScraper()
+        new_token = token_scraper.extract_token(store_data)
+        token_scraper.close()
+
+        if new_token:
+            StoreService.update_store_token(store_id, new_token)
+            store_data["web_token"] = new_token
+            _store_last_token_refresh[store_id] = current_time
+            logger.info(f"Token refreshed for {store_name}")
+            return True
+        else:
+            logger.error(f"Failed to refresh token for {store_name}")
+            return False
 
 
 def extract_and_update_token(store_data: dict, scraper: TokenScraper) -> tuple:
@@ -190,6 +231,7 @@ def scrape_store_products(store_data: dict) -> tuple:
     """Scrape all products for a single store with parallel category processing"""
     store_id = store_data["store_id"]
     store_name = store_data["store_name"]
+    token_lock = get_store_token_lock(store_id)
 
     known_brands = BrandService.get_all_brands()
     total_products = 0
@@ -208,6 +250,8 @@ def scrape_store_products(store_data: dict) -> tuple:
 
         def scrape_category(category):
             """Scrape a single category"""
+            nonlocal store_data  # Allow updating store_data's token
+
             scraper = ProductScraper(
                 known_brands=known_brands, product_service=ProductService
             )
@@ -244,18 +288,13 @@ def scrape_store_products(store_data: dict) -> tuple:
                 if error and isinstance(error, TokenExpiredException):
                     logger.warning(f"Token expired for {store_name}. Re-fetching...")
 
-                    token_scraper = TokenScraper()
-                    new_token = token_scraper.extract_token(store_data)
-                    token_scraper.close()
-
-                    if new_token:
-                        StoreService.update_store_token(store_id, new_token)
-                        store_data["web_token"] = new_token
+                    if refresh_token_if_needed(
+                        store_data, store_id, store_name, token_lock
+                    ):
                         cat = futures[future]
                         retry_name, retry_count, _ = scrape_category(cat)
                         total_products += retry_count
                     else:
-                        logger.error(f"Failed to refresh token for {store_name}")
                         failed_categories += 1
                 else:
                     total_products += count
