@@ -345,7 +345,7 @@ class ImageService:
                                 failed += 1
 
                 # Process non-VPN first (fast), then VPN (throttled)
-                process_batch(non_vpn_products, max_workers=30, label="non-VPN")
+                process_batch(non_vpn_products, max_workers=15, label="non-VPN")
                 process_batch(vpn_products, max_workers=4, label="VPN")
 
                 logger.info(
@@ -498,7 +498,7 @@ class ImageService:
                                 failed += 1
 
                 # Process non-VPN first (fast), then VPN (throttled)
-                process_batch(non_vpn_products, max_workers=15, label="non-VPN")
+                process_batch(non_vpn_products, max_workers=10, label="non-VPN")
                 process_batch(vpn_products, max_workers=3, label="VPN")
 
                 logger.info(
