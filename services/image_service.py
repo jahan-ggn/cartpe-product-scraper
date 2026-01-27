@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import time
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -17,9 +18,16 @@ from config.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
+# VPN-related curl exit codes
+VPN_ERROR_CODES = {45, 55, 56}  # Interface/network errors indicating VPN down
+
 
 class ImageService:
     """Service for handling product images and videos"""
+
+    _vpn_lock = threading.Lock()
+    _vpn_last_restart = 0
+    _vpn_restart_cooldown = 30  # seconds between restart attempts
 
     def __init__(self):
         """Initialize R2 client"""
@@ -35,37 +43,197 @@ class ImageService:
         self.bucket_name = settings.R2_BUCKET_NAME
         self.global_vpn_enabled = getattr(settings, "USE_VPN", False)
 
+    @classmethod
+    def _is_vpn_up(cls) -> bool:
+        """Check if VPN interface tun0 exists and is up"""
+        try:
+            result = subprocess.run(
+                ["ip", "link", "show", "tun0"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return result.returncode == 0 and "UP" in result.stdout
+        except Exception as e:
+            logger.error(f"Error checking VPN status: {e}")
+            return False
+
+    @classmethod
+    def _restart_vpn(cls) -> bool:
+        """Restart VPN connection with cooldown to prevent rapid restarts"""
+        current_time = time.time()
+
+        with cls._vpn_lock:
+            # Check cooldown
+            if current_time - cls._vpn_last_restart < cls._vpn_restart_cooldown:
+                logger.info("VPN restart skipped (cooldown active)")
+                # Wait a bit and check if another thread fixed it
+                time.sleep(5)
+                return cls._is_vpn_up()
+
+            logger.warning("VPN appears down. Attempting restart...")
+
+            try:
+                # Kill existing openvpn processes
+                subprocess.run(
+                    ["pkill", "-f", "openvpn"],
+                    capture_output=True,
+                    timeout=10,
+                )
+                time.sleep(2)
+
+                # Start VPN
+                result = subprocess.run(
+                    [
+                        "openvpn",
+                        "--config",
+                        "/etc/openvpn/ro-free-5.protonvpn.udp.ovpn",
+                        "--daemon",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+
+                if result.returncode != 0:
+                    logger.error(f"VPN start failed: {result.stderr}")
+                    return False
+
+                # Wait for tun0 to come up
+                for _ in range(10):
+                    time.sleep(2)
+                    if cls._is_vpn_up():
+                        cls._vpn_last_restart = current_time
+                        logger.info("VPN restarted successfully")
+                        return True
+
+                logger.error("VPN failed to come up after restart")
+                return False
+
+            except Exception as e:
+                logger.error(f"Error restarting VPN: {e}")
+                return False
+
+    def _ensure_vpn_up(self) -> bool:
+        """Ensure VPN is up, restart if needed"""
+        if self._is_vpn_up():
+            return True
+        return self._restart_vpn()
+
     def _download_via_vpn(self, url: str, temp_path: str, timeout: int = 360) -> bool:
-        """Download file using curl through VPN interface"""
+        """Download file using curl through VPN interface with better error handling"""
         referer = "/".join(url.split("/")[:3]) + "/"
 
-        result = subprocess.run(
-            [
-                "/usr/bin/curl",
-                "--interface",
-                "tun0",
-                "-s",
-                "-f",
-                "-L",
-                "-H",
-                f"User-Agent: {settings.USER_AGENT}",
-                "-H",
-                f"Referer: {referer}",
-                "-o",
-                temp_path,
-                url,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        # First ensure VPN is up
+        if not self._ensure_vpn_up():
+            logger.error(f"Cannot download {url}: VPN is down and restart failed")
+            return False
 
-        if result.returncode != 0:
-            raise Exception(
-                f"curl failed with code {result.returncode}: {result.stderr}"
+        try:
+            # Use -w to capture HTTP status code, remove -f to get better errors
+            result = subprocess.run(
+                [
+                    "/usr/bin/curl",
+                    "--interface",
+                    "tun0",
+                    "-s",
+                    "-L",
+                    "-w",
+                    "\n%{http_code}",  # Append HTTP status code
+                    "-H",
+                    f"User-Agent: {settings.USER_AGENT}",
+                    "-H",
+                    f"Referer: {referer}",
+                    "-o",
+                    temp_path,
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
             )
 
-        return True
+            # Parse HTTP status from output
+            stdout_lines = result.stdout.strip().split("\n")
+            http_code = stdout_lines[-1] if stdout_lines else "000"
+
+            if result.returncode != 0:
+                # Check if it's a VPN-related error
+                if result.returncode in VPN_ERROR_CODES:
+                    logger.warning(
+                        f"VPN error (code {result.returncode}) downloading {url}. "
+                        f"Attempting VPN restart..."
+                    )
+                    if self._restart_vpn():
+                        # Retry once after VPN restart
+                        logger.info(f"Retrying download after VPN restart: {url}")
+                        return self._download_via_vpn_single_attempt(
+                            url, temp_path, referer, timeout
+                        )
+                    else:
+                        raise Exception(
+                            f"VPN down (curl code {result.returncode}) and restart failed"
+                        )
+                else:
+                    raise Exception(
+                        f"curl failed with code {result.returncode}, "
+                        f"HTTP status: {http_code}, stderr: {result.stderr}"
+                    )
+
+            # Check HTTP status code
+            if http_code.startswith(("4", "5")):
+                raise Exception(f"HTTP error {http_code} for {url}")
+
+            return True
+
+        except subprocess.TimeoutExpired:
+            raise Exception(f"Download timed out after {timeout}s for {url}")
+        except Exception as e:
+            raise Exception(str(e))
+
+    def _download_via_vpn_single_attempt(
+        self, url: str, temp_path: str, referer: str, timeout: int
+    ) -> bool:
+        """Single download attempt without VPN restart logic (used for retry)"""
+        try:
+            result = subprocess.run(
+                [
+                    "/usr/bin/curl",
+                    "--interface",
+                    "tun0",
+                    "-s",
+                    "-L",
+                    "-w",
+                    "\n%{http_code}",
+                    "-H",
+                    f"User-Agent: {settings.USER_AGENT}",
+                    "-H",
+                    f"Referer: {referer}",
+                    "-o",
+                    temp_path,
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+
+            stdout_lines = result.stdout.strip().split("\n")
+            http_code = stdout_lines[-1] if stdout_lines else "000"
+
+            if result.returncode != 0:
+                raise Exception(
+                    f"curl failed with code {result.returncode}, "
+                    f"HTTP status: {http_code}, stderr: {result.stderr}"
+                )
+
+            if http_code.startswith(("4", "5")):
+                raise Exception(f"HTTP error {http_code}")
+
+            return True
+
+        except subprocess.TimeoutExpired:
+            raise Exception(f"Download timed out after {timeout}s")
 
     def _download_via_requests(
         self, url: str, temp_path: str, timeout: int = 360
@@ -107,7 +275,7 @@ class ImageService:
                     )
                     time.sleep(wait_time)
                 else:
-                    logger.error(f"Error downloading {url}: {str(e)}")
+                    logger.error(f"Error downloading {url}: {e}")
                     return False
 
         return False
@@ -184,7 +352,7 @@ class ImageService:
             raise
 
     def compress_video(self, input_path: str, output_path: str) -> bool:
-        """Compress video using FFmpeg"""
+        """Compress video using FFmpeg with better error logging"""
         try:
             import ffmpeg
 
@@ -198,11 +366,15 @@ class ImageService:
                     acodec="aac",
                 )
                 .overwrite_output()
-                .run(quiet=True)
+                .run(capture_stdout=True, capture_stderr=True)
             )
             return True
+        except ffmpeg.Error as e:
+            stderr_output = e.stderr.decode() if e.stderr else "No stderr"
+            logger.error(f"FFmpeg error compressing {input_path}: {stderr_output}")
+            return False
         except Exception as e:
-            logger.error(f"Error compressing video: {e}")
+            logger.error(f"Error compressing video {input_path}: {e}")
             return False
 
     @staticmethod
@@ -211,6 +383,7 @@ class ImageService:
         try:
             image_service = ImageService()
 
+            # Step 1: Fetch products and release connection
             with DatabaseManager.get_connection() as conn:
                 cursor = conn.cursor(dictionary=True)
 
@@ -237,120 +410,116 @@ class ImageService:
 
                 products = cursor.fetchall()
 
-                # Split by VPN requirement
-                vpn_products = [p for p in products if p.get("use_vpn")]
-                non_vpn_products = [p for p in products if not p.get("use_vpn")]
+            # Step 2: Split by VPN requirement (connection now closed)
+            vpn_products = [p for p in products if p.get("use_vpn")]
+            non_vpn_products = [p for p in products if not p.get("use_vpn")]
 
-                logger.info(
-                    f"Processing images: {len(non_vpn_products)} non-VPN, {len(vpn_products)} VPN"
-                )
+            logger.info(
+                f"Processing images: {len(non_vpn_products)} non-VPN, {len(vpn_products)} VPN"
+            )
 
-                success, failed = 0, 0
-                temp_dir = Path("temp_images")
-                temp_dir.mkdir(exist_ok=True)
+            success, failed = 0, 0
+            temp_dir = Path("temp_images")
+            temp_dir.mkdir(exist_ok=True)
 
-                def process_single_image(product):
-                    product_id = product["id"]
-                    source_url = product["source_image_url"]
-                    product_images_str = product.get("product_images")
-                    current_store_type = product["store_type"]
-                    use_vpn = product.get("use_vpn", False)
+            def process_single_image(product):
+                product_id = product["id"]
+                source_url = product["source_image_url"]
+                product_images_str = product.get("product_images")
+                current_store_type = product["store_type"]
+                use_vpn = product.get("use_vpn", False)
 
-                    filename = f"{product_id}_{source_url.split('/')[-1]}"
-                    temp_path = temp_dir / filename
+                filename = f"{product_id}_{source_url.split('/')[-1]}"
+                temp_path = temp_dir / filename
 
-                    try:
-                        if not image_service.download_file(
-                            source_url, str(temp_path), use_vpn=use_vpn
-                        ):
-                            return (product_id, None, None)
-
-                        folder = (
-                            "woo" if current_store_type == "woocommerce" else "starter"
-                        )
-                        r2_key = f"{folder}/images/{source_url.split('/')[-1]}"
-                        r2_url = image_service.upload_to_r2(str(temp_path), r2_key)
-
-                        if temp_path.exists():
-                            os.remove(temp_path)
-
-                        if not r2_url:
-                            return (product_id, None, None)
-
-                        # Process additional images
-                        processed_images = None
-                        if product_images_str:
-                            image_urls = [
-                                url.strip()
-                                for url in product_images_str.split(",")
-                                if url.strip()
-                            ]
-                            processed_urls = []
-                            for img_url in image_urls:
-                                img_filename = f"{product_id}_{img_url.split('/')[-1]}"
-                                img_temp_path = temp_dir / img_filename
-                                if image_service.download_file(
-                                    img_url, str(img_temp_path), use_vpn=use_vpn
-                                ):
-                                    img_r2_key = (
-                                        f"{folder}/images/{img_url.split('/')[-1]}"
-                                    )
-                                    img_r2_url = image_service.upload_to_r2(
-                                        str(img_temp_path), img_r2_key
-                                    )
-                                    if img_r2_url:
-                                        processed_urls.append(img_r2_url)
-                                if img_temp_path.exists():
-                                    os.remove(img_temp_path)
-                            processed_images = (
-                                ", ".join(processed_urls) if processed_urls else None
-                            )
-
-                        return (product_id, r2_url, processed_images)
-
-                    except Exception as e:
-                        logger.error(f"Error processing product {product_id}: {e}")
-                        if temp_path.exists():
-                            os.remove(temp_path)
+                try:
+                    if not image_service.download_file(
+                        source_url, str(temp_path), use_vpn=use_vpn
+                    ):
                         return (product_id, None, None)
 
-                def process_batch(product_list, max_workers, label):
-                    nonlocal success, failed
-                    if not product_list:
-                        return
+                    folder = "woo" if current_store_type == "woocommerce" else "starter"
+                    r2_key = f"{folder}/images/{source_url.split('/')[-1]}"
+                    r2_url = image_service.upload_to_r2(str(temp_path), r2_key)
 
-                    logger.info(f"Starting {label} batch with {max_workers} workers...")
+                    if temp_path.exists():
+                        os.remove(temp_path)
 
-                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        futures = {
-                            executor.submit(process_single_image, p): p
-                            for p in product_list
-                        }
+                    if not r2_url:
+                        return (product_id, None, None)
 
-                        for future in as_completed(futures):
-                            product_id, r2_url, product_images = future.result()
+                    # Process additional images
+                    processed_images = None
+                    if product_images_str:
+                        image_urls = [
+                            url.strip()
+                            for url in product_images_str.split(",")
+                            if url.strip()
+                        ]
+                        processed_urls = []
+                        for img_url in image_urls:
+                            img_filename = f"{product_id}_{img_url.split('/')[-1]}"
+                            img_temp_path = temp_dir / img_filename
+                            if image_service.download_file(
+                                img_url, str(img_temp_path), use_vpn=use_vpn
+                            ):
+                                img_r2_key = f"{folder}/images/{img_url.split('/')[-1]}"
+                                img_r2_url = image_service.upload_to_r2(
+                                    str(img_temp_path), img_r2_key
+                                )
+                                if img_r2_url:
+                                    processed_urls.append(img_r2_url)
+                            if img_temp_path.exists():
+                                os.remove(img_temp_path)
+                        processed_images = (
+                            ", ".join(processed_urls) if processed_urls else None
+                        )
 
-                            if r2_url:
+                    return (product_id, r2_url, processed_images)
+
+                except Exception as e:
+                    logger.error(f"Error processing product {product_id}: {e}")
+                    if temp_path.exists():
+                        os.remove(temp_path)
+                    return (product_id, None, None)
+
+            def process_batch(product_list, max_workers, label):
+                nonlocal success, failed
+                if not product_list:
+                    return
+
+                logger.info(f"Starting {label} batch with {max_workers} workers...")
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(process_single_image, p): p
+                        for p in product_list
+                    }
+
+                    for future in as_completed(futures):
+                        product_id, r2_url, product_images = future.result()
+
+                        if r2_url:
+                            # New connection for each UPDATE
+                            with DatabaseManager.get_connection() as conn:
+                                cursor = conn.cursor(dictionary=True)
                                 cursor.execute(
                                     """UPDATE products SET image_url = %s, product_images = %s, updated_at = updated_at WHERE id = %s""",
                                     (r2_url, product_images, product_id),
                                 )
-                                conn.commit()
-                                success += 1
-                                if success % 100 == 0:
-                                    logger.info(
-                                        f"Processed {success} product images..."
-                                    )
-                            else:
-                                failed += 1
+                            success += 1
+                            if success % 100 == 0:
+                                logger.info(f"Processed {success} product images...")
+                        else:
+                            failed += 1
 
-                # Process non-VPN first (fast), then VPN (throttled)
-                process_batch(non_vpn_products, max_workers=15, label="non-VPN")
-                process_batch(vpn_products, max_workers=4, label="VPN")
+            # Process non-VPN first (fast), then VPN (throttled)
+            process_batch(non_vpn_products, max_workers=15, label="non-VPN")
+            process_batch(vpn_products, max_workers=4, label="VPN")
 
-                logger.info(
-                    f"Image processing complete: {success} success, {failed} failed"
-                )
+            logger.info(
+                f"Image processing complete: {success} success, {failed} failed"
+            )
 
         except Exception as e:
             logger.error(f"Error in process_images: {str(e)}")
@@ -362,6 +531,7 @@ class ImageService:
         try:
             image_service = ImageService()
 
+            # Step 1: Fetch products and release connection
             with DatabaseManager.get_connection() as conn:
                 cursor = conn.cursor(dictionary=True)
 
@@ -384,100 +554,100 @@ class ImageService:
 
                 products = cursor.fetchall()
 
-                # Split by VPN requirement
-                vpn_products = [p for p in products if p.get("use_vpn")]
-                non_vpn_products = [p for p in products if not p.get("use_vpn")]
+            # Step 2: Split by VPN requirement (connection now closed)
+            vpn_products = [p for p in products if p.get("use_vpn")]
+            non_vpn_products = [p for p in products if not p.get("use_vpn")]
 
-                logger.info(
-                    f"Processing videos: {len(non_vpn_products)} non-VPN, {len(vpn_products)} VPN"
-                )
+            logger.info(
+                f"Processing videos: {len(non_vpn_products)} non-VPN, {len(vpn_products)} VPN"
+            )
 
-                success, failed = 0, 0
-                temp_dir = Path("temp_videos")
-                temp_dir.mkdir(exist_ok=True)
+            success, failed = 0, 0
+            temp_dir = Path("temp_videos")
+            temp_dir.mkdir(exist_ok=True)
 
-                def process_single_video(product):
-                    product_id = product["id"]
-                    video_url = product["video_url"]
-                    description = product.get("description")
-                    current_store_type = product["store_type"]
-                    use_vpn = product.get("use_vpn", False)
+            def process_single_video(product):
+                product_id = product["id"]
+                video_url = product["video_url"]
+                description = product.get("description")
+                current_store_type = product["store_type"]
+                use_vpn = product.get("use_vpn", False)
 
-                    video_filename = f"{product_id}_{video_url.split('/')[-1]}"
-                    video_temp_path = temp_dir / video_filename
-                    compressed_path = temp_dir / f"compressed_{video_filename}"
+                video_filename = f"{product_id}_{video_url.split('/')[-1]}"
+                video_temp_path = temp_dir / video_filename
+                compressed_path = temp_dir / f"compressed_{video_filename}"
 
-                    try:
-                        if not image_service.download_file(
-                            video_url, str(video_temp_path), use_vpn=use_vpn
-                        ):
-                            return (product_id, None, None, None)
-
-                        folder = (
-                            "woo" if current_store_type == "woocommerce" else "starter"
-                        )
-
-                        if image_service.compress_video(
-                            str(video_temp_path), str(compressed_path)
-                        ):
-                            video_r2_key = f"{folder}/videos/{video_url.split('/')[-1]}"
-                            r2_video_url = image_service.upload_to_r2(
-                                str(compressed_path), video_r2_key
-                            )
-                            if compressed_path.exists():
-                                os.remove(compressed_path)
-                        else:
-                            r2_video_url = None
-
-                        if video_temp_path.exists():
-                            os.remove(video_temp_path)
-
-                        return (product_id, r2_video_url, video_url, description)
-
-                    except Exception as e:
-                        logger.error(
-                            f"Error processing video for product {product_id}: {e}"
-                        )
-                        if video_temp_path.exists():
-                            os.remove(video_temp_path)
-                        if compressed_path.exists():
-                            os.remove(compressed_path)
+                try:
+                    if not image_service.download_file(
+                        video_url, str(video_temp_path), use_vpn=use_vpn
+                    ):
                         return (product_id, None, None, None)
 
-                def process_batch(product_list, max_workers, label):
-                    nonlocal success, failed
-                    if not product_list:
-                        return
+                    folder = "woo" if current_store_type == "woocommerce" else "starter"
 
-                    logger.info(
-                        f"Starting {label} video batch with {max_workers} workers..."
+                    if image_service.compress_video(
+                        str(video_temp_path), str(compressed_path)
+                    ):
+                        video_r2_key = f"{folder}/videos/{video_url.split('/')[-1]}"
+                        r2_video_url = image_service.upload_to_r2(
+                            str(compressed_path), video_r2_key
+                        )
+                        if compressed_path.exists():
+                            os.remove(compressed_path)
+                    else:
+                        r2_video_url = None
+
+                    if video_temp_path.exists():
+                        os.remove(video_temp_path)
+
+                    return (product_id, r2_video_url, video_url, description)
+
+                except Exception as e:
+                    logger.error(
+                        f"Error processing video for product {product_id}: {e}"
                     )
+                    if video_temp_path.exists():
+                        os.remove(video_temp_path)
+                    if compressed_path.exists():
+                        os.remove(compressed_path)
+                    return (product_id, None, None, None)
 
-                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        futures = {
-                            executor.submit(process_single_video, p): p
-                            for p in product_list
-                        }
+            def process_batch(product_list, max_workers, label):
+                nonlocal success, failed
+                if not product_list:
+                    return
 
-                        for future in as_completed(futures):
-                            (
-                                product_id,
-                                r2_video_url,
-                                original_video_url,
-                                description,
-                            ) = future.result()
+                logger.info(
+                    f"Starting {label} video batch with {max_workers} workers..."
+                )
 
-                            if r2_video_url:
-                                updated_description = None
-                                if (
-                                    original_video_url
-                                    and description
-                                    and original_video_url in description
-                                ):
-                                    updated_description = description.replace(
-                                        original_video_url, r2_video_url
-                                    )
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(process_single_video, p): p
+                        for p in product_list
+                    }
 
+                    for future in as_completed(futures):
+                        (
+                            product_id,
+                            r2_video_url,
+                            original_video_url,
+                            description,
+                        ) = future.result()
+
+                        if r2_video_url:
+                            updated_description = None
+                            if (
+                                original_video_url
+                                and description
+                                and original_video_url in description
+                            ):
+                                updated_description = description.replace(
+                                    original_video_url, r2_video_url
+                                )
+
+                            with DatabaseManager.get_connection() as conn:
+                                cursor = conn.cursor(dictionary=True)
                                 if updated_description:
                                     cursor.execute(
                                         """UPDATE products SET video_url = %s, description = %s, updated_at = updated_at WHERE id = %s""",
@@ -488,22 +658,19 @@ class ImageService:
                                         """UPDATE products SET video_url = %s, updated_at = updated_at WHERE id = %s""",
                                         (r2_video_url, product_id),
                                     )
-                                conn.commit()
-                                success += 1
-                                if success % 10 == 0:
-                                    logger.info(
-                                        f"Processed {success} product videos..."
-                                    )
-                            else:
-                                failed += 1
+                            success += 1
+                            if success % 10 == 0:
+                                logger.info(f"Processed {success} product videos...")
+                        else:
+                            failed += 1
 
-                # Process non-VPN first (fast), then VPN (throttled)
-                process_batch(non_vpn_products, max_workers=10, label="non-VPN")
-                process_batch(vpn_products, max_workers=3, label="VPN")
+            # Process non-VPN first (fast), then VPN (throttled)
+            process_batch(non_vpn_products, max_workers=10, label="non-VPN")
+            process_batch(vpn_products, max_workers=3, label="VPN")
 
-                logger.info(
-                    f"Video processing complete: {success} success, {failed} failed"
-                )
+            logger.info(
+                f"Video processing complete: {success} success, {failed} failed"
+            )
 
         except Exception as e:
             logger.error(f"Error in process_videos: {str(e)}")
