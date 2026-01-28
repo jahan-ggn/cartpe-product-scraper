@@ -420,37 +420,51 @@ class ProductScraper:
             logger.warning(f"Error extracting product details: {e}")
             return None
 
-    def extract_product_images(self, product_url: str) -> Optional[str]:
+    def extract_product_images(
+        self, product_url: str, max_retries: int = 3
+    ) -> Optional[str]:
         """Extract all additional product images from product detail page"""
-        try:
-            response = self.session.get(product_url, timeout=settings.REQUEST_TIMEOUT)
-            response.raise_for_status()
+        for attempt in range(max_retries):
+            try:
+                response = self.session.get(
+                    product_url, timeout=settings.REQUEST_TIMEOUT
+                )
+                response.raise_for_status()
 
-            soup = BeautifulSoup(response.text, "lxml")
+                soup = BeautifulSoup(response.text, "lxml")
 
-            # Find all main-image slides
-            image_elements = soup.select("li.main-image img.img-fluid")
+                # Find all main-image slides
+                image_elements = soup.select("li.main-image img.img-fluid")
 
-            if len(image_elements) <= 1:
+                if len(image_elements) <= 1:
+                    return None
+
+                # Extract URLs, skip first one (primary image)
+                image_urls = [img.get("src", "").strip() for img in image_elements[1:]]
+
+                # Filter out empty URLs and join
+                image_urls = [url for url in image_urls if url]
+
+                return ", ".join(image_urls) if image_urls else None
+
+            except requests.HTTPError as e:
+                if e.response.status_code == 404:
+                    raise
+                # Retry on 500 errors
+                if e.response.status_code == 500 and attempt < max_retries - 1:
+                    logger.debug(
+                        f"Retry {attempt + 1} for {product_url} after 500 error"
+                    )
+                    time.sleep(2 * (attempt + 1))  # 2s, 4s, 6s
+                    continue
+                logger.warning(f"Error extracting images from {product_url}: {e}")
                 return None
 
-            # Extract URLs, skip first one (primary image)
-            image_urls = [img.get("src", "").strip() for img in image_elements[1:]]
+            except Exception as e:
+                logger.warning(f"Error extracting images from {product_url}: {e}")
+                return None
 
-            # Filter out empty URLs and join
-            image_urls = [url for url in image_urls if url]
-
-            return ", ".join(image_urls) if image_urls else None
-
-        except requests.HTTPError as e:
-            if e.response.status_code == 404:
-                raise
-            logger.warning(f"Error extracting images from {product_url}: {e}")
-            return None
-
-        except Exception as e:
-            logger.warning(f"Error extracting images from {product_url}: {e}")
-            return None
+        return None
 
     def close(self):
         """Close the requests session"""

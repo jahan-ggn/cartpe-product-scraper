@@ -583,6 +583,12 @@ class ImageService:
                     ):
                         return (product_id, None, None, None)
 
+                    # Validate downloaded video
+                    if not image_service._is_valid_video(str(video_temp_path)):
+                        if video_temp_path.exists():
+                            os.remove(video_temp_path)
+                        return (product_id, None, None, None)
+
                     folder = "woo" if current_store_type == "woocommerce" else "starter"
 
                     if image_service.compress_video(
@@ -675,3 +681,40 @@ class ImageService:
         except Exception as e:
             logger.error(f"Error in process_videos: {str(e)}")
             raise
+
+    def _is_valid_video(self, file_path: str, min_size_kb: int = 10) -> bool:
+        """Check if downloaded video file is valid"""
+        try:
+            # Check file exists and has minimum size
+            if not os.path.exists(file_path):
+                return False
+
+            file_size = os.path.getsize(file_path)
+            if file_size < min_size_kb * 1024:
+                logger.warning(f"Video file too small ({file_size} bytes): {file_path}")
+                return False
+
+            # Use ffprobe to verify file is readable
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    file_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode != 0:
+                logger.warning(f"Invalid video file (ffprobe failed): {file_path}")
+                return False
+
+            return True
+
+        except Exception as e:
+            logger.warning(f"Error validating video {file_path}: {e}")
+            return False
