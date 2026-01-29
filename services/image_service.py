@@ -136,7 +136,7 @@ class ImageService:
             return interface
 
     def _download_via_vpn(
-        self, url: str, temp_path: str, timeout: int = 360, interface: str = None
+        self, url: str, temp_path: str, timeout: int = 120, interface: str = None
     ) -> bool:
         """Download file using curl through VPN interface with better error handling"""
         referer = "/".join(url.split("/")[:3]) + "/"
@@ -686,6 +686,13 @@ class ImageService:
                             if success % 10 == 0:
                                 logger.info(f"Processed {success} product videos...")
                         else:
+                            # Set video_url and description to NULL on failure
+                            with DatabaseManager.get_connection() as conn:
+                                cursor = conn.cursor(dictionary=True)
+                                cursor.execute(
+                                    """UPDATE products SET video_url = NULL, description = NULL, updated_at = updated_at WHERE id = %s""",
+                                    (product_id,),
+                                )
                             failed += 1
 
             # Process non-VPN first (fast), then VPN (throttled)
