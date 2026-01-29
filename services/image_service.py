@@ -68,8 +68,8 @@ class ImageService:
 
         # Map interface to config file
         vpn_configs = {
-            "tun0": "/etc/openvpn/ro-free-5.protonvpn.udp.ovpn",
-            "tun1": "/etc/openvpn/ro-free-9.protonvpn.udp.ovpn",
+            "tun0": "/etc/openvpn/client/ro-free-5.protonvpn.udp.conf",
+            "tun1": "/etc/openvpn/client/ro-free-9.protonvpn.udp.conf",
         }
 
         with cls._vpn_lock:
